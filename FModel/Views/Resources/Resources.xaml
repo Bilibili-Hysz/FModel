@@ -105,6 +105,12 @@
                 Value="{Binding CUE4Parse.GameDirectory.DirectoryFilesView, IsAsync=True}" />
         <Setter Property="ScrollViewer.HorizontalScrollBarVisibility"
                 Value="Disabled" />
+        <Setter Property="ScrollViewer.CanContentScroll"
+                Value="True" />
+        <Setter Property="VirtualizingPanel.IsVirtualizing"
+                Value="True" />
+        <Setter Property="VirtualizingPanel.VirtualizationMode"
+                Value="Recycling" />
         <Setter Property="adonisExtensions:ScrollViewerExtension.VerticalScrollBarExpansionMode"
                 Value="NeverExpand" />
         <Setter Property="adonisExtensions:ScrollViewerExtension.VerticalScrollBarPlacement"
@@ -1033,6 +1039,19 @@
                                             </Canvas>
                                         </Viewbox>
                                     </MenuItem.Icon>
+                                </MenuItem>
+                                <MenuItem Header="Save UEScene Bundle" Command="{Binding TabCommand}" CommandParameter="Save_UEScene_Bundle">
+                                    <MenuItem.IsEnabled>
+                                        <Binding Path="Entry">
+                                            <Binding.Converter>
+                                                <converters:GameFileMeetsConditionConverter>
+                                                    <converters:GameFileMeetsConditionConverter.Conditions>
+                                                        <converters:GameFileIsUESceneEligibleCondition />
+                                                    </converters:GameFileMeetsConditionConverter.Conditions>
+                                                </converters:GameFileMeetsConditionConverter>
+                                            </Binding.Converter>
+                                        </Binding>
+                                    </MenuItem.IsEnabled>
                                 </MenuItem>
                                 <MenuItem Header="Save Animation" Command="{Binding TabCommand}" CommandParameter="Save_Animations">
                                     <MenuItem.Icon>

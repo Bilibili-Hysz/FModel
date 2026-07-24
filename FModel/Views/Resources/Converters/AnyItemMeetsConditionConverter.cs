@@ -6,6 +6,7 @@ using System.Linq;
 using System.Windows.Data;
 using CUE4Parse.UE4.IO.Objects;
 using FModel.Extensions;
+using FModel.Framework;
 using FModel.ViewModels;
 
 namespace FModel.Views.Resources.Converters;
@@ -77,6 +78,14 @@ public class ItemCategoryCondition : IItemCondition
 
         // if the specified category is a targeted non-base category, check for exact match
         return item.AssetCategory == Category;
+    }
+}
+
+public class ItemIsUESceneEligibleCondition : IItemCondition
+{
+    public bool Matches(GameFileViewModel item)
+    {
+        return UESceneEligibility.IsEligible(item);
     }
 }
 

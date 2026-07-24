@@ -6,6 +6,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Threading;
 using CUE4Parse_Conversion.Textures.BC;
 using CUE4Parse.Compression;
 using CUE4Parse.Encryption.Aes;
@@ -27,6 +28,10 @@ namespace FModel.ViewModels;
 
 public class ApplicationViewModel : ViewModel
 {
+    private readonly object _providerStatusLock = new();
+    private (string Label, string Prefix)? _pendingProviderStatus;
+    private bool _providerStatusScheduled;
+
     private EBuildKind _build;
     public EBuildKind Build
     {
@@ -113,13 +118,12 @@ public class ApplicationViewModel : ViewModel
         CUE4Parse.Provider.VfsRegistered += (sender, count) =>
         {
             if (sender is not IAesVfsReader reader) return;
-            Status.UpdateStatusLabel($"{count} Archives ({reader.Name})", "Registered");
+            QueueProviderStatus($"{count:N0} archives", "Scanning");
             CUE4Parse.GameDirectory.Add(reader);
         };
         CUE4Parse.Provider.VfsMounted += (sender, count) =>
         {
             if (sender is not IAesVfsReader reader) return;
-            Status.UpdateStatusLabel($"{count:N0} Packages ({reader.Name})", "Mounted");
             CUE4Parse.GameDirectory.Verify(reader);
         };
         CUE4Parse.Provider.VfsUnmounted += (sender, _) =>
@@ -133,6 +137,76 @@ public class ApplicationViewModel : ViewModel
         AudioPlayer = new AudioPlayerViewModel();
 
         Status.SetStatus(EStatusKind.Ready);
+    }
+
+    private void QueueProviderStatus(string label, string prefix)
+    {
+        lock (_providerStatusLock)
+        {
+            _pendingProviderStatus = (label, prefix);
+            if (_providerStatusScheduled)
+                return;
+
+            _providerStatusScheduled = true;
+        }
+
+        _ = Application.Current.Dispatcher.BeginInvoke(PublishProviderStatus, DispatcherPriority.Background);
+    }
+
+    public Task SetLoadingStatusAsync(string label)
+    {
+        var dispatcher = Application.Current.Dispatcher;
+        if (dispatcher.CheckAccess())
+        {
+            ClearPendingProviderStatus();
+            Status.SetStatus(EStatusKind.Loading);
+            Status.UpdateStatusLabel(label, string.Empty);
+            return Task.CompletedTask;
+        }
+
+        return dispatcher.InvokeAsync(() =>
+        {
+            ClearPendingProviderStatus();
+            Status.SetStatus(EStatusKind.Loading);
+            Status.UpdateStatusLabel(label, string.Empty);
+        }, DispatcherPriority.Background).Task;
+    }
+
+    public Task UpdateLoadingStatusAsync(string label)
+    {
+        var dispatcher = Application.Current.Dispatcher;
+        if (dispatcher.CheckAccess())
+        {
+            ClearPendingProviderStatus();
+            Status.UpdateStatusLabel(label, string.Empty);
+            return Task.CompletedTask;
+        }
+
+        return dispatcher.InvokeAsync(() =>
+        {
+            ClearPendingProviderStatus();
+            Status.UpdateStatusLabel(label, string.Empty);
+        }, DispatcherPriority.Background).Task;
+    }
+
+    private void ClearPendingProviderStatus()
+    {
+        lock (_providerStatusLock)
+            _pendingProviderStatus = null;
+    }
+
+    private void PublishProviderStatus()
+    {
+        (string Label, string Prefix)? update;
+        lock (_providerStatusLock)
+        {
+            update = _pendingProviderStatus;
+            _pendingProviderStatus = null;
+            _providerStatusScheduled = false;
+        }
+
+        if (update is { } status)
+            Status.UpdateStatusLabel(status.Label, status.Prefix);
     }
 
     public DirectorySettings AvoidEmptyGameDirectory(bool bAlreadyLaunched)
@@ -194,6 +268,13 @@ public class ApplicationViewModel : ViewModel
 
     public void Restart()
     {
+        if (!UserSettings.Save())
+        {
+            MessageBox.Show($"Could not save settings to {UserSettings.FilePath}. FModel will not restart.",
+                "Settings Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
         var path = Path.GetFullPath(Environment.GetCommandLineArgs()[0]);
         if (path.EndsWith(".dll"))
         {
@@ -308,6 +389,7 @@ public class ApplicationViewModel : ViewModel
 
         if (!zlibFileInfo.Exists || zlibFileInfo.LastWriteTimeUtc < DateTime.UtcNow.AddMonths(-4))
         {
+            await ApplicationService.ApplicationView.UpdateLoadingStatusAsync("Downloading Zlib runtime");
             if (!await ZlibHelper.DownloadDllAsync(zlibPath))
             {
                 zlibFileInfo.Refresh();

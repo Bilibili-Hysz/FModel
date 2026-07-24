@@ -532,19 +532,18 @@ public class Renderer : IDisposable
 
     private void WorldMesh(IPropertyHolder actor, Transform transform, bool forceShow = false)
     {
-        if (actor.TryGetValue(out FPackageIndex[] instanceComponents, "InstanceComponents"))
+        var staticMeshComponents = GetStaticMeshComponents(actor);
+        if (staticMeshComponents.Count > 0)
         {
-            foreach (var component in instanceComponents)
+            foreach (var staticMeshComp in staticMeshComponents)
             {
-                if (!component.TryLoad(out UStaticMeshComponent staticMeshComp) ||
-                    !staticMeshComp.GetStaticMesh().TryLoad(out UStaticMesh m) || m.Materials.Length < 1)
+                if (staticMeshComp.GetLoadedStaticMesh() is not { Materials.Length: > 0 } m)
                     continue;
 
                 var relation = CalculateTransform(staticMeshComp, transform);
-                if (staticMeshComp is UInstancedStaticMeshComponent { PerInstanceSMData.Length: > 0 } instancedStaticMeshComp)
+                if (staticMeshComp is UInstancedStaticMeshComponent instancedStaticMeshComp && instancedStaticMeshComp.GetInstances() is { Length: > 0 } instances)
                 {
-
-                    foreach (var perInstanceData in instancedStaticMeshComp.PerInstanceSMData)
+                    foreach (var perInstanceData in instances)
                     {
                         ProcessMesh(actor, instancedStaticMeshComp, m, new Transform
                         {
@@ -576,11 +575,30 @@ public class Renderer : IDisposable
             }
         }
         else if (actor.TryGetValue(out FPackageIndex staticMeshComponent, "StaticMeshComponent", "ComponentTemplate", "StaticMesh", "Mesh", "LightMesh", "SplineMesh") &&
-                 staticMeshComponent.TryLoad(out UStaticMeshComponent staticMeshComp) &&
-                 staticMeshComp.GetStaticMesh().TryLoad(out UStaticMesh m) && m.Materials.Length > 0)
+                  staticMeshComponent.TryLoad(out UStaticMeshComponent staticMeshComp) &&
+                  staticMeshComp.GetStaticMesh().TryLoad(out UStaticMesh m) && m.Materials.Length > 0)
         {
             ProcessMesh(actor, staticMeshComp, m, CalculateTransform(staticMeshComp, transform));
         }
+    }
+
+    private static List<UStaticMeshComponent> GetStaticMeshComponents(IPropertyHolder actor)
+    {
+        var result = new List<UStaticMeshComponent>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        void Add(FPackageIndex component)
+        {
+            if (component.TryLoad(out UStaticMeshComponent staticMeshComponent) && seen.Add(staticMeshComponent.GetPathName()))
+                result.Add(staticMeshComponent);
+        }
+
+        if (actor.TryGetValue(out FPackageIndex rootComponent, "RootComponent")) Add(rootComponent);
+        foreach (var property in new[] { "OwnedComponents", "InstanceComponents", "Components" })
+        {
+            if (!actor.TryGetValue(out FPackageIndex[] components, property)) continue;
+            foreach (var component in components) Add(component);
+        }
+        return result;
     }
 
     private void ProcessMesh(IPropertyHolder actor, UStaticMeshComponent staticMeshComp, UStaticMesh m, Transform transform)
@@ -591,7 +609,7 @@ public class Renderer : IDisposable
     private void ProcessMesh(IPropertyHolder actor, UObject staticMeshComp, UStaticMesh m, Transform transform, bool forceShow)
     {
         var bSpline = staticMeshComp is USplineMeshComponent;
-        var guid = m.LightingGuid;
+        var guid = GetWorldMeshGuid(m, staticMeshComp);
         if (Options.TryGetModel(guid, out var model))
         {
             model.AddInstance(transform);
@@ -671,6 +689,17 @@ public class Renderer : IDisposable
         {
             Options.Lights.Add(new SpotLight(guid, Options.Icons["spotlight"], sl1, sl2, transform));
         }
+    }
+
+    private static FGuid GetWorldMeshGuid(UStaticMesh mesh, UObject component)
+    {
+        if (!component.TryGetValue(out FPackageIndex[] overrides, "OverrideMaterials") || overrides.Length == 0)
+            return mesh.LightingGuid;
+
+        var signature = string.Join("|", overrides.Select(material => material.Load<UObject>()?.GetPathName() ?? ""));
+        var hash = StringComparer.Ordinal.GetHashCode(signature);
+        return new FGuid(mesh.LightingGuid.A ^ (uint) hash, mesh.LightingGuid.B,
+            mesh.LightingGuid.C, mesh.LightingGuid.D ^ 0x4D41544Fu);
     }
 
     private Transform CalculateTransform(IPropertyHolder staticMeshComp, Transform relation)

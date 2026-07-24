@@ -64,6 +64,11 @@ using CUE4Parse.UE4.Versions;
 using CUE4Parse.UE4.Wwise;
 using CUE4Parse.Utils;
 using CUE4Parse_Conversion;
+using CUE4Parse_Conversion.Meshes;
+using CUE4Parse_Conversion.Materials;
+using CUE4Parse_Conversion.UEScene;
+using CUE4Parse_Conversion.UEFormat;
+using CUE4Parse_Conversion.UEFormat.MaterialLinks;
 using CUE4Parse_Conversion.Sounds;
 using CUE4Parse.GameTypes.LordOfMysteries.FileProvider;
 using CUE4Parse.MappingsProvider.Jmap;
@@ -332,13 +337,34 @@ public class CUE4ParseViewModel : ViewModel
                 }
             }
 
+            if (Provider is not DefaultFileProvider)
+                InitializeProvider();
+        }, allowWhenLoading: true);
+
+        if (Provider is DefaultFileProvider)
+        {
+            await _threadWorkerView.Begin(_ => InitializeProvider(), canBeCanceled: false, allowWhenLoading: true);
+        }
+
+        void InitializeProvider()
+        {
+            var scanDirectory = Path.GetFileName(UserSettings.Default.GameDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            if (string.IsNullOrEmpty(scanDirectory)) scanDirectory = UserSettings.Default.GameDirectory;
+            ApplicationService.ApplicationView.UpdateLoadingStatusAsync($"Scanning archives in {scanDirectory}").GetAwaiter().GetResult();
+            Log.Information("Starting archive scan in {Directory}", UserSettings.Default.GameDirectory);
+            var scanStarted = Stopwatch.GetTimestamp();
             Provider.Initialize();
+            var scanElapsed = Stopwatch.GetElapsedTime(scanStarted);
+            var archiveCount = Provider.UnloadedVfs.Count;
+            ApplicationService.ApplicationView.UpdateLoadingStatusAsync($"Found {archiveCount:N0} archives in {scanElapsed:g}").GetAwaiter().GetResult();
+            Log.Information("Completed archive scan in {Directory}: {ArchiveCount} archives in {Elapsed}", UserSettings.Default.GameDirectory, archiveCount, scanElapsed);
             GameDirectory.AddLooseFiles(Provider.LooseFileCount);
+            GameDirectory.FlushPendingChanges();
             _wwiseProviderLazy = new Lazy<WwiseProvider>(() => new WwiseProvider(Provider, UserSettings.Default.GameDirectory));
             _fmodProviderLazy = new Lazy<FModProvider>(() => new FModProvider(Provider, UserSettings.Default.GameDirectory));
             _criWareProviderLazy = new Lazy<CriWareProvider>(() => new CriWareProvider(Provider, UserSettings.Default.GameDirectory));
             Log.Information($"{Provider.Versions.Game} ({Provider.Versions.Platform}) | Archives: x{Provider.UnloadedVfs.Count} | AES: x{Provider.RequiredKeys.Count} | Loose Files: x{Provider.Files.Count}");
-        });
+        }
     }
 
     private void RegisterFortniteLiveArchives(StreamedFileProvider provider, FBuildPatchAppManifest manifest,
@@ -379,6 +405,7 @@ public class CUE4ParseViewModel : ViewModel
     {
         Provider.SubmitKeys(aesKeys);
         Provider.PostMount();
+        GameDirectory.FlushPendingChanges();
 
         var aesMax = Provider.RequiredKeys.Count + Provider.Keys.Count;
         var archiveMax = Provider.UnloadedVfs.Count + Provider.MountedVfs.Count;
@@ -1721,8 +1748,21 @@ public class CUE4ParseViewModel : ViewModel
 
     private void SaveExport(UObject export, bool updateUi = true)
     {
-        var toSave = new Exporter(export, UserSettings.Default.ExportOptions);
-        var toSaveDirectory = new DirectoryInfo(UserSettings.Default.ModelDirectory);
+        var exportOptions = UserSettings.Default.ExportOptions;
+        Exporter toSave;
+        DirectoryInfo toSaveDirectory;
+        try
+        {
+            toSave = new Exporter(export, exportOptions);
+            toSaveDirectory = Exporter.GetOutputDirectory(export, exportOptions, UserSettings.Default.ModelDirectory);
+        }
+        catch (ArgumentException error)
+        {
+            Interlocked.Increment(ref FailedExportCount);
+            Log.Error(error, "Could not save {FileName}", export.Name);
+            FLogger.Append(ELog.Error, () => FLogger.Text($"Could not save '{export.Name}': {error.Message}", Constants.WHITE, true));
+            return;
+        }
         if (toSave.TryWriteToDir(toSaveDirectory, out var label, out var savedFilePath))
         {
             Interlocked.Increment(ref ExportedCount);
@@ -1742,6 +1782,124 @@ public class CUE4ParseViewModel : ViewModel
             Log.Error("{FileName} could not be saved", export.Name);
             FLogger.Append(ELog.Error, () => FLogger.Text($"Could not save '{export.Name}'", Constants.WHITE, true));
         }
+    }
+
+    public void SaveUESceneBundle(CancellationToken cancellationToken, GameFile entry, bool updateUi = true)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var world = Provider.LoadPackage(entry).GetExports().OfType<UWorld>().FirstOrDefault();
+        if (world is null)
+        {
+            Interlocked.Increment(ref FailedExportCount);
+            FLogger.Append(ELog.Error, () => FLogger.Text($"'{entry.Name}' is not a UWorld package.", Constants.WHITE, true));
+            return;
+        }
+
+        var destination = AllocateUESceneDestination(Provider, entry.Path, UserSettings.Default.ModelDirectory,
+            UserSettings.Default.UESceneExportStrategy);
+        var options = UserSettings.Default.ExportOptions;
+        options.MeshFormat = EMeshFormat.UEFormat;
+        options.MaterialLinkMode = MaterialLinkMode.Bundle;
+        options.MaterialLinkBundleRoot = destination.ResourcePhysicalRoot;
+        var resourceUriPolicy = new UESceneResourceUriPolicy(destination.ResourceLogicalRoot);
+        options.UESceneResourceUriPolicy = resourceUriPolicy;
+        options.MaterialExportLayout = destination.ResourceLogicalRoot == UESceneResourceLogicalRoot.SceneBundle
+            ? MaterialExportLayout.Categorized
+            : MaterialExportLayout.PreserveHierarchy;
+        options.LodFormat = ELodFormat.AllLods;
+        var planner = new UESceneBundleExporter();
+        var plan = planner.BuildPlan(world, new CUE4Parse_Conversion.UEScene.ExporterOptions(resourceUriPolicy), destination.ResourceLogicalRoot, cancellationToken);
+        var exporter = new UESceneBundleExporter(plan, (resource, token) =>
+        {
+            token.ThrowIfCancellationRequested();
+            var sourceMeshPath = resource.SourceMeshPath ?? resource.CanonicalUnrealPath;
+            if (!Provider.TryLoadPackageObject<UStaticMesh>(sourceMeshPath, out var mesh))
+                throw new InvalidDataException($"Could not load static mesh '{sourceMeshPath}'.");
+            var overrides = (resource.OverrideMaterialPaths ?? []).Select(path =>
+            {
+                if (string.IsNullOrWhiteSpace(path)) return null;
+                if (Provider.TryLoadPackageObject<UMaterialInterface>(path, out var material)) return material;
+                throw new InvalidDataException($"Could not load material override '{path}'.");
+            }).ToArray();
+            var meshExporter = new MeshExporter(mesh, options, overrides, resource.LogicalUri);
+            var model = meshExporter.MeshLods.SingleOrDefault();
+            if (model is null || meshExporter.DeclaredLods.Count == 0)
+                throw new InvalidDataException($"Could not export static mesh '{resource.CanonicalUnrealPath}'.");
+            return CreateUESceneProducedResource(model.FileName, model.FileData, meshExporter.DeclaredLods, model.ExportManifest,
+                meshExporter.EffectiveMaterialSlots);
+        });
+        var result = exporter.TryWriteToDestination(new UEScenePublicationDestination(destination.ScenePhysicalPath,
+            destination.ResourcePhysicalRoot, destination.ResourceLogicalRoot, destination.ResourcePublicationPolicy), cancellationToken);
+        if (result.Success)
+        {
+            Interlocked.Increment(ref ExportedCount);
+            Log.Information("Saved UEScene bundle {ScenePath} with {ActorCount} actors, {ComponentCount} components, {MeshCount} meshes, {InstanceCount} instances, {DiagnosticCount} diagnostics, and {ResourceCount} resources", result.ScenePath, result.ActorCount, result.ComponentCount, result.MeshCount, result.InstanceCount, result.DiagnosticCount, result.ResourceCount);
+            foreach (var recoveryError in result.RecoveryErrors)
+                Log.Warning(recoveryError.Exception, "UEScene publication completed with {ErrorCode}. Target: {TargetPath}. Recovery stage: {RecoveryStagePath}", recoveryError.Code, recoveryError.TargetPath, result.RecoveryStagePath);
+            if (updateUi)
+                FLogger.Append(ELog.Information, () =>
+                {
+                    FLogger.Text($"Successfully exported {result.MeshCount} models from ", Constants.WHITE);
+                    FLogger.Link(entry.Path, result.ScenePath!, true);
+                    if (result.RecoveryErrors.Count > 0)
+                        FLogger.Text($" {FormatUESceneExportErrors(result)}{(result.RecoveryStagePath is null ? string.Empty : $" Recovery staging: {result.RecoveryStagePath}")}", Constants.WHITE, true);
+                });
+            return;
+        }
+
+        Interlocked.Increment(ref FailedExportCount);
+        if (result.Failure is not null)
+            Log.Error(result.Failure.Exception, "Could not save UEScene bundle for {FileName}. Code: {ErrorCode}. Recovery stage: {RecoveryStagePath}", entry.Name, result.Failure.Code, result.RecoveryStagePath);
+        foreach (var recoveryError in result.RecoveryErrors)
+            Log.Error(recoveryError.Exception, "UEScene publication recovery failed for {FileName}. Code: {ErrorCode}. Target: {TargetPath}. Recovery stage: {RecoveryStagePath}", entry.Name, recoveryError.Code, recoveryError.TargetPath, result.RecoveryStagePath);
+        if (updateUi)
+            FLogger.Append(ELog.Error, () => FLogger.Text($"Could not save UEScene bundle for '{entry.Name}': {FormatUESceneExportErrors(result)}{(result.RecoveryStagePath is null ? string.Empty : $" Recovery staging: {result.RecoveryStagePath}")}", Constants.WHITE, true));
+    }
+
+    public static string FormatUESceneExportErrors(SceneExportResult result)
+    {
+        static string Message(SceneExportErrorCode code) => code switch
+        {
+            SceneExportErrorCode.Cancelled => "The export was cancelled.",
+            SceneExportErrorCode.InvalidData => "The scene or produced resource data is invalid.",
+            SceneExportErrorCode.AccessDenied => "Access to the export destination was denied.",
+            SceneExportErrorCode.DiskFull => "The destination disk is full.",
+            SceneExportErrorCode.PromotionFailed => "The staged export could not be published.",
+            SceneExportErrorCode.RollbackFailed => "The previous files could not be fully restored.",
+            SceneExportErrorCode.CleanupFailed => "Temporary staging files could not be removed.",
+            SceneExportErrorCode.IoFailure => "An I/O error prevented the export from completing.",
+            _ => "An unexpected error prevented the export from completing."
+        };
+
+        return string.Join(" ", (result.Failure is null ? Enumerable.Empty<SceneExportError>() : [result.Failure])
+            .Concat(result.RecoveryErrors)
+            .Select(error => Message(error.Code))
+            .Distinct(StringComparer.Ordinal));
+    }
+
+    public static UESceneExportDestination AllocateUESceneDestination(IFileProvider provider, string entryPath,
+        string modelDirectory, UESceneExportStrategy strategy)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        var fixedPath = provider.FixPath(entryPath).Replace('\\', '/');
+        var projectPrefix = provider.ProjectName + "/";
+        if (!fixedPath.StartsWith(projectPrefix, StringComparison.Ordinal))
+            throw new ArgumentException("Map path is not rooted at the active project.", nameof(entryPath));
+        return UESceneExportDestination.Allocate(Path.Combine(modelDirectory, provider.ProjectName),
+            fixedPath[projectPrefix.Length..], strategy);
+    }
+
+    public static UESceneProducedResource CreateUESceneProducedResource(string meshFileName, byte[] modelBytes,
+        IEnumerable<(uint SourceLodIndex, float SourceScreenSize)> lods, ResourceManifest? manifest,
+        IEnumerable<UESceneProducedMaterialSlot>? materialSlots = null)
+    {
+        var sidecars = manifest?.Resources.Where(resource => resource.IsExternal).Select(resource => new UESceneProducedSidecar(
+            resource.UnrealObjectPath,
+            resource.UnrealObjectPath.StartsWith("material:", StringComparison.Ordinal) ? BundleResourceKind.MaterialJson : BundleResourceKind.Texture,
+            resource.RelativeUri, resource.Mime, resource.Bytes.ToArray())) ?? [];
+        return new UESceneProducedResource(meshFileName, modelBytes,
+            lods.Select(lod => new UESceneProducedLod(lod.SourceLodIndex, lod.SourceScreenSize)).ToArray(),
+            sidecars.ToArray(), materialSlots?.ToArray());
     }
 
     private readonly object _rawData = new ();

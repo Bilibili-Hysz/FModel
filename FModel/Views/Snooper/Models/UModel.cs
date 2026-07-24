@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Numerics;
 using CUE4Parse_Conversion;
+using CUE4Parse_Conversion.UEFormat.MaterialLinks;
 using CUE4Parse_Conversion.Meshes.PSK;
 using CUE4Parse.UE4.Assets;
 using CUE4Parse.UE4.Assets.Exports;
@@ -394,8 +395,18 @@ public abstract class UModel : IRenderableModel
 
     public bool Save(out string label, out string savedFilePath)
     {
-        var toSave = new Exporter(_export, UserSettings.Default.ExportOptions);
-        return toSave.TryWriteToDir(new DirectoryInfo(UserSettings.Default.ModelDirectory), out label, out savedFilePath);
+        try
+        {
+            var options = UserSettings.Default.ExportOptions;
+            var toSave = new Exporter(_export, options);
+            return toSave.TryWriteToDir(Exporter.GetOutputDirectory(_export, options, UserSettings.Default.ModelDirectory), out label, out savedFilePath);
+        }
+        catch (ArgumentException e)
+        {
+            label = e.Message;
+            savedFilePath = string.Empty;
+            return false;
+        }
     }
 
     public virtual void Dispose()

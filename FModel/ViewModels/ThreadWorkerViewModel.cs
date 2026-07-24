@@ -37,7 +37,18 @@ public class ThreadWorkerViewModel : ViewModel
         }
     }
 
-    public bool CanBeCanceled => CurrentCancellationTokenSource != null;
+    private bool _canCurrentOperationBeCanceled;
+    public bool CanCurrentOperationBeCanceled
+    {
+        get => _canCurrentOperationBeCanceled;
+        private set
+        {
+            if (SetProperty(ref _canCurrentOperationBeCanceled, value))
+                RaisePropertyChanged(nameof(CanBeCanceled));
+        }
+    }
+
+    public bool CanBeCanceled => CanCurrentOperationBeCanceled && CurrentCancellationTokenSource != null;
 
     private ApplicationViewModel _applicationView => ApplicationService.ApplicationView;
     private readonly AsyncQueue<Action<CancellationToken>> _jobs;
@@ -47,17 +58,18 @@ public class ThreadWorkerViewModel : ViewModel
         _jobs = new AsyncQueue<Action<CancellationToken>>();
     }
 
-    public async Task Begin(Action<CancellationToken> action)
+    public async Task Begin(Action<CancellationToken> action, bool canBeCanceled = true, bool allowWhenLoading = false)
     {
         if (_applicationView.CUE4Parse.IsSnooperOpen)
             _applicationView.CUE4Parse.SnooperViewer.Close();
-        else if (!_applicationView.Status.IsReady)
+        else if (!_applicationView.Status.IsReady && !allowWhenLoading)
         {
             SignalOperationInProgress();
             return;
         }
 
         CurrentCancellationTokenSource ??= new CancellationTokenSource();
+        CanCurrentOperationBeCanceled = canBeCanceled;
         _jobs.Enqueue(action);
         await ProcessQueues();
     }
@@ -91,6 +103,7 @@ public class ThreadWorkerViewModel : ViewModel
                     if (_applicationView.CUE4Parse.IsSnooperOpen)
                         _applicationView.CUE4Parse.SnooperViewer.Close();
                     CurrentCancellationTokenSource = null; // kill token
+                    CanCurrentOperationBeCanceled = false;
                     OperationCancelled = true;
                     OperationCancelled = false;
                     return;
@@ -99,6 +112,7 @@ public class ThreadWorkerViewModel : ViewModel
                 {
                     _applicationView.Status.SetStatus(EStatusKind.Failed);
                     CurrentCancellationTokenSource = null; // kill token
+                    CanCurrentOperationBeCanceled = false;
 
                     Log.Error("{Exception}", e);
                     switch (e)
@@ -127,6 +141,7 @@ public class ThreadWorkerViewModel : ViewModel
 
             _applicationView.Status.SetStatus(EStatusKind.Completed);
             CurrentCancellationTokenSource = null; // kill token
+            CanCurrentOperationBeCanceled = false;
         }
     }
 

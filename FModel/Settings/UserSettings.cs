@@ -12,6 +12,8 @@ using CUE4Parse_Conversion.Animations;
 using CUE4Parse_Conversion.Meshes;
 using CUE4Parse_Conversion.Textures;
 using CUE4Parse_Conversion.UEFormat.Enums;
+using CUE4Parse_Conversion.UEFormat.MaterialLinks;
+using UESceneExportStrategy = CUE4Parse_Conversion.UEScene.UESceneExportStrategy;
 using FModel.Extensions.Themes;
 using FModel.Framework;
 using FModel.ViewModels;
@@ -24,11 +26,7 @@ namespace FModel.Settings
     public sealed class UserSettings : ViewModel
     {
         public static UserSettings Default { get; set; }
-#if DEBUG
-        public static readonly string FilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FModel", "AppSettings_Debug.json");
-#else
-        public static readonly string FilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FModel", "AppSettings.json");
-#endif
+        public static readonly string FilePath = Path.Combine(AppContext.BaseDirectory, "AppSettings.json");
 
         static UserSettings()
         {
@@ -36,11 +34,72 @@ namespace FModel.Settings
         }
 
         private static bool _bSave = true;
-        public static void Save()
+        private static bool _canSave = true;
+
+        public static bool Load(out Exception exception)
         {
-            if (!_bSave || Default == null) return;
-            Default.PerDirectory[Default.CurrentDir.GameDirectory] = Default.CurrentDir;
-            File.WriteAllText(FilePath, JsonConvert.SerializeObject(Default, Formatting.Indented));
+            exception = null;
+            if (!File.Exists(FilePath))
+            {
+                Default = new UserSettings();
+                return true;
+            }
+
+            try
+            {
+                Default = JsonConvert.DeserializeObject<UserSettings>(
+                    File.ReadAllText(FilePath), JsonNetSerializer.SerializerSettings)
+                    ?? throw new JsonSerializationException("Settings file did not contain a settings object.");
+                return true;
+            }
+            catch (Exception caught)
+            {
+                Default = new UserSettings();
+                _canSave = false;
+                exception = caught;
+                return false;
+            }
+        }
+
+        public static bool Save()
+        {
+            if (!_bSave || Default == null) return true;
+            if (!_canSave) return false;
+
+            try
+            {
+                if (Default.CurrentDir != null)
+                    Default.PerDirectory[Default.CurrentDir.GameDirectory] = Default.CurrentDir;
+
+                var temporaryFilePath = Path.Combine(AppContext.BaseDirectory, $".{Path.GetRandomFileName()}.tmp");
+                try
+                {
+                    var json = JsonConvert.SerializeObject(Default, Formatting.Indented);
+                    using (var stream = new FileStream(temporaryFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    using (var writer = new StreamWriter(stream))
+                    {
+                        writer.Write(json);
+                        writer.Flush();
+                        stream.Flush(true);
+                    }
+
+                    if (File.Exists(FilePath))
+                        File.Replace(temporaryFilePath, FilePath, null);
+                    else
+                        File.Move(temporaryFilePath, FilePath);
+                }
+                finally
+                {
+                    if (File.Exists(temporaryFilePath))
+                        File.Delete(temporaryFilePath);
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public static void Delete()
@@ -49,6 +108,7 @@ namespace FModel.Settings
             {
                 _bSave = false;
                 File.Delete(FilePath);
+                _canSave = true;
             }
         }
 
@@ -76,7 +136,10 @@ namespace FModel.Settings
             Platform = Default.CurrentDir.TexturePlatform,
             ExportMorphTargets = Default.SaveMorphTargets,
             ExportMaterials = Default.SaveEmbeddedMaterials,
-            ExportHdrTexturesAsHdr = Default.SaveHdrTexturesAsHdr
+            ExportHdrTexturesAsHdr = Default.SaveHdrTexturesAsHdr,
+            MaterialLinkMode = Default.MaterialLinkMode,
+            MaterialLinkBundleRoot = Default.MaterialLinkBundleRoot,
+            MaterialExportLayout = Default.MaterialExportLayout
         };
 
         private bool _showChangelog = true;
@@ -91,6 +154,20 @@ namespace FModel.Settings
         {
             get => _outputDirectory;
             set => SetProperty(ref _outputDirectory, value);
+        }
+
+        private string _ueSceneDirectory;
+        public string UESceneDirectory
+        {
+            get => string.IsNullOrWhiteSpace(_ueSceneDirectory) ? Path.Combine(OutputDirectory ?? string.Empty, "UEScene") : _ueSceneDirectory;
+            set => SetProperty(ref _ueSceneDirectory, value);
+        }
+
+        private UESceneExportStrategy _ueSceneExportStrategy = UESceneExportStrategy.SelfContained;
+        public UESceneExportStrategy UESceneExportStrategy
+        {
+            get => _ueSceneExportStrategy;
+            set => SetProperty(ref _ueSceneExportStrategy, value);
         }
 
         private string _rawDataDirectory;
@@ -442,6 +519,27 @@ namespace FModel.Settings
         {
             get => _materialExportFormat;
             set => SetProperty(ref _materialExportFormat, value);
+        }
+
+        private MaterialLinkMode _materialLinkMode = MaterialLinkMode.Relative;
+        public MaterialLinkMode MaterialLinkMode
+        {
+            get => _materialLinkMode;
+            set => SetProperty(ref _materialLinkMode, value);
+        }
+
+        private string _materialLinkBundleRoot = string.Empty;
+        public string MaterialLinkBundleRoot
+        {
+            get => _materialLinkBundleRoot;
+            set => SetProperty(ref _materialLinkBundleRoot, value);
+        }
+
+        private MaterialExportLayout _materialExportLayout = MaterialExportLayout.PreserveHierarchy;
+        public MaterialExportLayout MaterialExportLayout
+        {
+            get => _materialExportLayout;
+            set => SetProperty(ref _materialExportLayout, value);
         }
 
         private ETextureFormat _textureExportFormat = ETextureFormat.Png;

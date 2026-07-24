@@ -5,6 +5,7 @@ using System.Linq;
 using System.Windows.Data;
 using CUE4Parse.FileProvider.Objects;
 using CUE4Parse.UE4.IO.Objects;
+using FModel.Framework;
 using FModel.ViewModels;
 
 namespace FModel.Views.Resources.Converters;
@@ -53,5 +54,13 @@ public class GameFileIsIoStoreCondition : IGameFileCondition
     public bool Matches(GameFile item)
     {
         return item is FIoStoreEntry;
+    }
+}
+
+public class GameFileIsUESceneEligibleCondition : IGameFileCondition
+{
+    public bool Matches(GameFile item)
+    {
+        return UESceneEligibility.IsEligible(item);
     }
 }

@@ -52,6 +52,9 @@ public class RightClickMenuCommand : ViewModelCommand<ApplicationViewModel>
             })
             .Where(static gf => gf is not null).ToArray();
 
+        if (trigger == "Save_UEScene_Bundle")
+            assets = UESceneEligibility.FilterEligible(param);
+
         if (folders.Length == 0 && assets.Length == 0)
             return;
 
@@ -67,6 +70,7 @@ public class RightClickMenuCommand : ViewModelCommand<ApplicationViewModel>
             "Save_Properties" => (EAction.Export, EShowAssetType.None, EBulkType.Properties),
             "Save_Textures" => (EAction.Export, EShowAssetType.None, EBulkType.Textures),
             "Save_Models" => (EAction.Export, EShowAssetType.None, EBulkType.Meshes),
+            "Save_UEScene_Bundle" => (EAction.Export, EShowAssetType.None, EBulkType.None),
             "Save_Animations" => (EAction.Export, EShowAssetType.None, EBulkType.Animations),
             "Save_Audio" => (EAction.Export, EShowAssetType.None, EBulkType.Audio),
             "Save_Code" => (EAction.Export, EShowAssetType.None, EBulkType.Code),
@@ -78,6 +82,28 @@ public class RightClickMenuCommand : ViewModelCommand<ApplicationViewModel>
         Interlocked.Exchange(ref contextViewModel.CUE4Parse.FailedExportCount, 0);
         await _threadWorkerView.Begin(cancellationToken =>
         {
+            if (trigger == "Save_UEScene_Bundle")
+            {
+                foreach (var entry in assets)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    try
+                    {
+                        contextViewModel.CUE4Parse.SaveUESceneBundle(cancellationToken, entry, false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        Interlocked.Increment(ref contextViewModel.CUE4Parse.FailedExportCount);
+                        FLogger.Append(ELog.Error, () => FLogger.Text($"Could not save UEScene bundle for '{entry.Name}': {ex.Message}", Constants.WHITE, true));
+                    }
+                }
+                return;
+            }
+
             if (action is EAction.Show)
             {
                 if (showtype is EShowAssetType.References)

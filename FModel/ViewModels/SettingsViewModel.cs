@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using CUE4Parse_Conversion;
 using CUE4Parse.UE4.Assets.Exports.Material;
 using CUE4Parse.UE4.Assets.Exports.Nanite;
 using CUE4Parse.UE4.Assets.Exports.Texture;
@@ -10,6 +11,8 @@ using CUE4Parse.UE4.Versions;
 using CUE4Parse_Conversion.Meshes;
 using CUE4Parse_Conversion.Textures;
 using CUE4Parse_Conversion.UEFormat.Enums;
+using CUE4Parse_Conversion.UEFormat.MaterialLinks;
+using CUE4Parse_Conversion.UEScene;
 using FModel.Extensions;
 using FModel.Extensions.Themes;
 using FModel.Framework;
@@ -161,6 +164,39 @@ public class SettingsViewModel : ViewModel
         set => SetProperty(ref _selectedMaterialExportFormat, value);
     }
 
+    private MaterialLinkMode _selectedMaterialLinkMode;
+    public MaterialLinkMode SelectedMaterialLinkMode
+    {
+        get => _selectedMaterialLinkMode;
+        set
+        {
+            if (!SetProperty(ref _selectedMaterialLinkMode, value)) return;
+            RaisePropertyChanged(nameof(MaterialLinkBundleSettingsEnabled));
+            RaisePropertyChanged(nameof(MaterialExportLayoutSettingsEnabled));
+        }
+    }
+
+    private string _materialLinkBundleRoot;
+    public string MaterialLinkBundleRoot
+    {
+        get => _materialLinkBundleRoot;
+        set => SetProperty(ref _materialLinkBundleRoot, value);
+    }
+
+    private MaterialExportLayout _selectedMaterialExportLayout;
+    public MaterialExportLayout SelectedMaterialExportLayout
+    {
+        get => _selectedMaterialExportLayout;
+        set => SetProperty(ref _selectedMaterialExportLayout, value);
+    }
+
+    private UESceneExportStrategy _selectedUESceneExportStrategy;
+    public UESceneExportStrategy SelectedUESceneExportStrategy
+    {
+        get => _selectedUESceneExportStrategy;
+        set => SetProperty(ref _selectedUESceneExportStrategy, value);
+    }
+
     private ETextureFormat _selectedTextureExportFormat;
     public ETextureFormat SelectedTextureExportFormat
     {
@@ -191,6 +227,8 @@ public class SettingsViewModel : ViewModel
 
     public bool SocketSettingsEnabled => SelectedMeshExportFormat == EMeshFormat.ActorX;
     public bool CompressionSettingsEnabled => SelectedMeshExportFormat == EMeshFormat.UEFormat;
+    public bool MaterialLinkBundleSettingsEnabled => SelectedMaterialLinkMode == MaterialLinkMode.Bundle;
+    public bool MaterialExportLayoutSettingsEnabled => SelectedMaterialLinkMode == MaterialLinkMode.Bundle;
 
     public ReadOnlyObservableCollection<EGame> UeGames { get; private set; }
     public ReadOnlyObservableCollection<ELanguage> AssetLanguages { get; private set; }
@@ -207,6 +245,7 @@ public class SettingsViewModel : ViewModel
     public ReadOnlyObservableCollection<ETextureFormat> TextureExportFormats { get; private set; }
     public ReadOnlyObservableCollection<ETexturePlatform> Platforms { get; private set; }
     public ReadOnlyObservableCollection<EJsonHighlightTheme> JsonHighlightThemes { get; private set; }
+    public ReadOnlyObservableCollection<UESceneExportStrategy> UESceneExportStrategies { get; private set; }
 
     private string _outputSnapshot;
     private string _rawDataSnapshot;
@@ -230,10 +269,23 @@ public class SettingsViewModel : ViewModel
     private ELodFormat _lodExportFormatSnapshot;
     private ENaniteMeshFormat _naniteMeshExportFormatSnapshot;
     private EMaterialFormat _materialExportFormatSnapshot;
+    private MaterialLinkMode _materialLinkModeSnapshot;
+    private string _materialLinkBundleRootSnapshot;
+    private MaterialExportLayout _materialExportLayoutSnapshot;
+    private UESceneExportStrategy _ueSceneExportStrategySnapshot;
+    private string _ueSceneDirectorySnapshot;
     private ETextureFormat _textureExportFormatSnapshot;
     private EJsonHighlightTheme _jsonHighlightThemeSnapshot;
 
     private bool _mappingsUpdate = false;
+
+    // Retained only to round-trip the legacy setting; UEScene exports no longer consume it.
+    private string _ueSceneDirectory;
+    public string UESceneDirectory
+    {
+        get => _ueSceneDirectory;
+        set => SetProperty(ref _ueSceneDirectory, value);
+    }
 
     public SettingsViewModel()
     {
@@ -249,6 +301,7 @@ public class SettingsViewModel : ViewModel
         _audioSnapshot = UserSettings.Default.AudioDirectory;
         _codeSnapshot = UserSettings.Default.CodeDirectory;
         _modelSnapshot = UserSettings.Default.ModelDirectory;
+        _ueSceneDirectorySnapshot = UserSettings.Default.UESceneDirectory;
         _gameSnapshot = UserSettings.Default.GameDirectory;
         _uePlatformSnapshot = UserSettings.Default.CurrentDir.TexturePlatform;
         _ueGameSnapshot = UserSettings.Default.CurrentDir.UeVersion;
@@ -275,6 +328,10 @@ public class SettingsViewModel : ViewModel
         _lodExportFormatSnapshot = UserSettings.Default.LodExportFormat;
         _naniteMeshExportFormatSnapshot = UserSettings.Default.NaniteMeshExportFormat;
         _materialExportFormatSnapshot = UserSettings.Default.MaterialExportFormat;
+        _materialLinkModeSnapshot = UserSettings.Default.MaterialLinkMode;
+        _materialLinkBundleRootSnapshot = UserSettings.Default.MaterialLinkBundleRoot;
+        _materialExportLayoutSnapshot = UserSettings.Default.MaterialExportLayout;
+        _ueSceneExportStrategySnapshot = UserSettings.Default.UESceneExportStrategy;
         _textureExportFormatSnapshot = UserSettings.Default.TextureExportFormat;
         _jsonHighlightThemeSnapshot = UserSettings.Default.JsonHighlightTheme;
 
@@ -292,10 +349,15 @@ public class SettingsViewModel : ViewModel
         SelectedLodExportFormat = _lodExportFormatSnapshot;
         SelectedNaniteMeshExportFormat = _naniteMeshExportFormatSnapshot;
         SelectedMaterialExportFormat = _materialExportFormatSnapshot;
+        SelectedMaterialLinkMode = _materialLinkModeSnapshot;
+        MaterialLinkBundleRoot = _materialLinkBundleRootSnapshot;
+        SelectedMaterialExportLayout = _materialExportLayoutSnapshot;
+        SelectedUESceneExportStrategy = _ueSceneExportStrategySnapshot;
         SelectedTextureExportFormat = _textureExportFormatSnapshot;
         CriwareDecryptionKey = _criwareDecryptionKey;
         UnluacOpcodeMap = _unluacOpcodeMap;
         SelectedJsonHighlightTheme = _jsonHighlightThemeSnapshot;
+        UESceneDirectory = _ueSceneDirectorySnapshot;
         SelectedAesReload = UserSettings.Default.AesReload;
         SelectedDiscordRpc = UserSettings.Default.DiscordRpc;
 
@@ -314,12 +376,32 @@ public class SettingsViewModel : ViewModel
         TextureExportFormats = new ReadOnlyObservableCollection<ETextureFormat>(new ObservableCollection<ETextureFormat>(EnumerateTextureExportFormat()));
         Platforms = new ReadOnlyObservableCollection<ETexturePlatform>(new ObservableCollection<ETexturePlatform>(EnumerateUePlatforms()));
         JsonHighlightThemes = new ReadOnlyObservableCollection<EJsonHighlightTheme>(new ObservableCollection<EJsonHighlightTheme>(EnumerateJsonHighlightThemes()));
+        UESceneExportStrategies = new ReadOnlyObservableCollection<UESceneExportStrategy>(new ObservableCollection<UESceneExportStrategy>(Enum.GetValues<UESceneExportStrategy>()));
     }
 
     public bool Save(out List<SettingsOut> whatShouldIDo)
     {
+        return Save(out whatShouldIDo, out _);
+    }
+
+    public bool Save(out List<SettingsOut> whatShouldIDo, out string? validationError)
+    {
         var restart = false;
         whatShouldIDo = new List<SettingsOut>();
+        validationError = null;
+
+        if (SelectedMaterialLinkMode == MaterialLinkMode.Bundle)
+        {
+            try
+            {
+                MaterialLinkBuilder.ValidateBundleRoot(MaterialLinkBundleRoot);
+            }
+            catch (ArgumentException error)
+            {
+                validationError = error.Message;
+                return false;
+            }
+        }
 
         if (_assetLanguageSnapshot != SelectedAssetLanguage)
             whatShouldIDo.Add(SettingsOut.ReloadLocres);
@@ -349,10 +431,15 @@ public class SettingsViewModel : ViewModel
         UserSettings.Default.LodExportFormat = SelectedLodExportFormat;
         UserSettings.Default.NaniteMeshExportFormat = SelectedNaniteMeshExportFormat;
         UserSettings.Default.MaterialExportFormat = SelectedMaterialExportFormat;
+        UserSettings.Default.MaterialLinkMode = SelectedMaterialLinkMode;
+        UserSettings.Default.MaterialLinkBundleRoot = MaterialLinkBundleRoot;
+        UserSettings.Default.MaterialExportLayout = SelectedMaterialExportLayout;
+        UserSettings.Default.UESceneExportStrategy = SelectedUESceneExportStrategy;
         UserSettings.Default.TextureExportFormat = SelectedTextureExportFormat;
         UserSettings.Default.AesReload = SelectedAesReload;
         UserSettings.Default.DiscordRpc = SelectedDiscordRpc;
         UserSettings.Default.JsonHighlightTheme = SelectedJsonHighlightTheme;
+        UserSettings.Default.UESceneDirectory = UESceneDirectory;
 
         if (SelectedDiscordRpc == EDiscordRpc.Never)
             _discordHandler.Shutdown();

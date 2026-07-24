@@ -11,9 +11,10 @@ using CUE4Parse;
 using FModel.Framework;
 using FModel.Services;
 using FModel.Settings;
-using Newtonsoft.Json;
+using FModel.ViewModels;
 using Serilog.Sinks.SystemConsole.Themes;
 using MessageBox = AdonisUI.Controls.MessageBox;
+using MessageBoxButton = AdonisUI.Controls.MessageBoxButton;
 using MessageBoxImage = AdonisUI.Controls.MessageBoxImage;
 using MessageBoxResult = AdonisUI.Controls.MessageBoxResult;
 
@@ -38,14 +39,19 @@ public partial class App
 #endif
         base.OnStartup(e);
 
-        try
+        if (!UserSettings.Load(out var settingsLoadException))
         {
-            UserSettings.Default = JsonConvert.DeserializeObject<UserSettings>(
-                File.ReadAllText(UserSettings.FilePath), JsonNetSerializer.SerializerSettings);
+            MessageBox.Show($"Could not load {UserSettings.FilePath}. The file was left unchanged and settings will not be saved during this run.\n\n{settingsLoadException.Message}",
+                "Settings Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
-        catch
+
+        if (GameSelectorViewModel.NormalizeManualGameDirectories())
         {
-            UserSettings.Default = new UserSettings();
+            if (!UserSettings.Save())
+            {
+                MessageBox.Show($"Could not save migrated settings to {UserSettings.FilePath}.",
+                    "Settings Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         var createMe = false;
@@ -104,7 +110,6 @@ public partial class App
             UserSettings.Default.ModelDirectory = Path.Combine(UserSettings.Default.OutputDirectory, "Exports");
         }
 
-        Directory.CreateDirectory(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FModel"));
         Directory.CreateDirectory(Path.Combine(UserSettings.Default.OutputDirectory, "Backups"));
         if (createMe) Directory.CreateDirectory(Path.Combine(UserSettings.Default.OutputDirectory, "Exports"));
         Directory.CreateDirectory(Path.Combine(UserSettings.Default.OutputDirectory, "Logs"));
@@ -135,8 +140,9 @@ public partial class App
     private void AppExit(object sender, ExitEventArgs e)
     {
         Log.Information("––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––");
+        if (!UserSettings.Save())
+            Log.Error("Could not save settings to {SettingsFile}", UserSettings.FilePath);
         Log.CloseAndFlush();
-        UserSettings.Save();
         Environment.Exit(0);
     }
 

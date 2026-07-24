@@ -2,7 +2,10 @@
                              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                              xmlns:local="clr-namespace:FModel"
-                             xmlns:c4pMeshes="clr-namespace:CUE4Parse_Conversion.Meshes;assembly=CUE4Parse-Conversion"
+                               xmlns:c4pMeshes="clr-namespace:CUE4Parse_Conversion.Meshes;assembly=CUE4Parse-Conversion"
+                                xmlns:c4pMaterialLinks="clr-namespace:CUE4Parse_Conversion.UEFormat.MaterialLinks;assembly=CUE4Parse-Conversion"
+                                xmlns:c4pUEScene="clr-namespace:CUE4Parse_Conversion.UEScene;assembly=CUE4Parse-Conversion"
+                              xmlns:c4p="clr-namespace:CUE4Parse_Conversion;assembly=CUE4Parse-Conversion"
                              xmlns:controls="clr-namespace:FModel.Views.Resources.Controls"
                              xmlns:converters="clr-namespace:FModel.Views.Resources.Converters"
                              xmlns:adonisUi="clr-namespace:AdonisUI;assembly=AdonisUI"
@@ -24,6 +27,7 @@
             <DataTemplate x:Key="GeneralTemplate">
                 <Grid adonisExtensions:LayerExtension.Layer="2">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
@@ -367,6 +371,10 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -546,6 +554,42 @@
                     <CheckBox Grid.Row="20" Grid.Column="2" Grid.ColumnSpan="3" Content="{Binding IsChecked, RelativeSource={RelativeSource Self}, Converter={x:Static converters:BoolToToggleConverter.Instance}}"
                               IsChecked="{Binding SaveHdrTexturesAsHdr, Source={x:Static local:Settings.UserSettings.Default}, Mode=TwoWay}"
                               Style="{DynamicResource {x:Static adonisUi:Styles.ToggleSwitch}}" Margin="0 5 0 5"/>
+
+                    <TextBlock Grid.Row="21" Grid.Column="0" Text="Material Links (UEFormat)" VerticalAlignment="Center" Margin="0 0 0 5" />
+                    <ComboBox Grid.Row="21" Grid.Column="2" Grid.ColumnSpan="3" SelectedValuePath="Tag" SelectedValue="{Binding SettingsView.SelectedMaterialLinkMode, Mode=TwoWay}"
+                              DataContext="{Binding DataContext, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type local:Views.SettingsView}}}" Margin="0 0 0 5">
+                        <ComboBoxItem Content="Disabled" Tag="{x:Static c4pMaterialLinks:MaterialLinkMode.None}" />
+                        <ComboBoxItem Content="Relative" Tag="{x:Static c4pMaterialLinks:MaterialLinkMode.Relative}" />
+                        <ComboBoxItem Content="Bundle" Tag="{x:Static c4pMaterialLinks:MaterialLinkMode.Bundle}" />
+                        <ComboBoxItem Content="Embedded" Tag="{x:Static c4pMaterialLinks:MaterialLinkMode.Embedded}" />
+                    </ComboBox>
+
+                    <TextBlock Grid.Row="22" Grid.Column="0" Text="Material Link Bundle Root" VerticalAlignment="Center" Margin="0 0 0 5"
+                               DataContext="{Binding DataContext, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type local:Views.SettingsView}}}"
+                               Visibility="{Binding SettingsView.MaterialLinkBundleSettingsEnabled, Converter={StaticResource BoolToVisibilityConverter}}" />
+                    <TextBox Grid.Row="22" Grid.Column="2" IsReadOnly="True" Text="{Binding SettingsView.MaterialLinkBundleRoot, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="0 0 0 5"
+                             DataContext="{Binding DataContext, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type local:Views.SettingsView}}}"
+                             Visibility="{Binding SettingsView.MaterialLinkBundleSettingsEnabled, Converter={StaticResource BoolToVisibilityConverter}}" />
+                    <Button Grid.Row="22" Grid.Column="4" Content="..." HorizontalAlignment="Right" Click="OnBrowseMaterialLinkBundle" Margin="0 0 0 5"
+                            DataContext="{Binding DataContext, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type local:Views.SettingsView}}}"
+                             Visibility="{Binding SettingsView.MaterialLinkBundleSettingsEnabled, Converter={StaticResource BoolToVisibilityConverter}}" />
+
+                    <TextBlock Grid.Row="23" Grid.Column="0" Text="Material Export Layout" VerticalAlignment="Center" Margin="0 0 0 5"
+                               DataContext="{Binding DataContext, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type local:Views.SettingsView}}}"
+                               Visibility="{Binding SettingsView.MaterialExportLayoutSettingsEnabled, Converter={StaticResource BoolToVisibilityConverter}}" />
+                    <ComboBox Grid.Row="23" Grid.Column="2" Grid.ColumnSpan="3" SelectedValuePath="Tag" SelectedValue="{Binding SettingsView.SelectedMaterialExportLayout, Mode=TwoWay}"
+                              DataContext="{Binding DataContext, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type local:Views.SettingsView}}}" Margin="0 0 0 5"
+                              Visibility="{Binding SettingsView.MaterialExportLayoutSettingsEnabled, Converter={StaticResource BoolToVisibilityConverter}}">
+                        <ComboBoxItem Content="Preserve Hierarchy" Tag="{x:Static c4p:MaterialExportLayout.PreserveHierarchy}" />
+                        <ComboBoxItem Content="Categorized" Tag="{x:Static c4p:MaterialExportLayout.Categorized}" />
+                    </ComboBox>
+
+                    <TextBlock Grid.Row="24" Grid.Column="0" Text="UEScene Export Layout" VerticalAlignment="Center" Margin="0 0 0 5" />
+                    <ComboBox Grid.Row="24" Grid.Column="2" Grid.ColumnSpan="3" SelectedValuePath="Tag" SelectedValue="{Binding SettingsView.SelectedUESceneExportStrategy, Mode=TwoWay}"
+                              DataContext="{Binding DataContext, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type local:Views.SettingsView}}}" Margin="0 0 0 5">
+                        <ComboBoxItem Content="Self-Contained" Tag="{x:Static c4pUEScene:UESceneExportStrategy.SelfContained}" />
+                        <ComboBoxItem Content="Reuse Game Export Tree" Tag="{x:Static c4pUEScene:UESceneExportStrategy.ReuseGameExportTree}" />
+                    </ComboBox>
                 </Grid>
             </DataTemplate>
             <DataTemplate x:Key="KeybindingsTemplate">

@@ -15,6 +15,11 @@ public class TabCommand : ViewModelCommand<TabItem>
     {
     }
 
+    public override bool CanExecute(TabItem tabViewModel, object parameter)
+    {
+        return parameter is not "Save_UEScene_Bundle" || UESceneEligibility.IsEligible(tabViewModel?.Entry);
+    }
+
     public override async void Execute(TabItem tabViewModel, object parameter)
     {
         switch (parameter)
@@ -54,6 +59,11 @@ public class TabCommand : ViewModelCommand<TabItem>
                 {
                     _applicationView.CUE4Parse.Extract(cancellationToken, tabViewModel.Entry, false, EBulkType.Meshes);
                 });
+                break;
+            case "Save_UEScene_Bundle":
+                if (!UESceneEligibility.IsEligible(tabViewModel.Entry))
+                    return;
+                await _threadWorkerView.Begin(cancellationToken => _applicationView.CUE4Parse.SaveUESceneBundle(cancellationToken, tabViewModel.Entry));
                 break;
             case "Save_Animations":
                 await _threadWorkerView.Begin(cancellationToken =>

@@ -43,7 +43,12 @@ public partial class SettingsView
 
     private async void OnClick(object sender, RoutedEventArgs e)
     {
-        var restart = _applicationView.SettingsView.Save(out var whatShouldIDo);
+        var restart = _applicationView.SettingsView.Save(out var whatShouldIDo, out var validationError);
+        if (validationError is not null)
+        {
+            FLogger.Append(ELog.Error, () => FLogger.Text(validationError, Constants.WHITE, true));
+            return;
+        }
         if (restart)
             _applicationView.RestartWithWarning();
 
@@ -113,6 +118,11 @@ public partial class SettingsView
     private void OnBrowseModels(object sender, RoutedEventArgs e)
     {
         if (TryBrowse(out var path)) UserSettings.Default.ModelDirectory = path;
+    }
+
+    private void OnBrowseMaterialLinkBundle(object sender, RoutedEventArgs e)
+    {
+        if (TryBrowse(out var path)) _settingsView.MaterialLinkBundleRoot = path;
     }
 
     private void OnBrowseMappings(object sender, RoutedEventArgs e)

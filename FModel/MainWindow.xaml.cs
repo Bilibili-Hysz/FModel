@@ -86,9 +86,6 @@ public partial class MainWindow
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         var newOrUpdated = UserSettings.Default.ShowChangelog;
-#if !DEBUG
-        ApplicationService.ApiEndpointView.FModelApi.CheckForUpdates(true);
-#endif
 
         switch (UserSettings.Default.AesReload)
         {
@@ -101,6 +98,7 @@ public partial class MainWindow
                 break;
         }
 
+        await _applicationView.SetLoadingStatusAsync("Initializing compression runtime");
         await Task.WhenAll(
             ApplicationViewModel.InitOodle(),
             ApplicationViewModel.InitZlib()
