@@ -1821,12 +1821,28 @@ public class CUE4ParseViewModel : ViewModel
                 if (Provider.TryLoadPackageObject<UMaterialInterface>(path, out var material)) return material;
                 throw new InvalidDataException($"Could not load material override '{path}'.");
             }).ToArray();
-            var meshExporter = new MeshExporter(mesh, options, overrides, resource.LogicalUri);
+            UESceneProducedDiagnostic[] exportDiagnostics = [];
+            MeshExporter meshExporter;
+            try
+            {
+                meshExporter = new MeshExporter(mesh, options, overrides, resource.LogicalUri);
+            }
+            catch (UeFormatMaterialTopologyException topology)
+            {
+                options.LodFormat = ELodFormat.FirstLod;
+                Log.Warning(topology,
+                    "UEScene model {MeshPath} has incompatible LOD material topology ({BaselineLod} vs {ConflictingLod}); retrying with LOD0 only",
+                    resource.SourceMeshPath ?? resource.CanonicalUnrealPath, topology.BaselineLodIndex, topology.ConflictingLodIndex);
+                meshExporter = new MeshExporter(mesh, options, overrides, resource.LogicalUri);
+                exportDiagnostics = [new(2, 0, UESceneDiagnosticCodes.LodMaterialTopologyFallback,
+                    resource.SourceMeshPath ?? resource.CanonicalUnrealPath,
+                    $"Material topology differed between LOD {topology.BaselineLodIndex} and LOD {topology.ConflictingLodIndex}; exported this model as LOD0 only.")];
+            }
             var model = meshExporter.MeshLods.SingleOrDefault();
             if (model is null || meshExporter.DeclaredLods.Count == 0)
                 throw new InvalidDataException($"Could not export static mesh '{resource.CanonicalUnrealPath}'.");
             return CreateUESceneProducedResource(model.FileName, model.FileData, meshExporter.DeclaredLods, model.ExportManifest,
-                meshExporter.EffectiveMaterialSlots);
+                meshExporter.EffectiveMaterialSlots, exportDiagnostics);
         });
         var result = exporter.TryWriteToDestination(new UEScenePublicationDestination(destination.ScenePhysicalPath,
             destination.ResourcePhysicalRoot, destination.ResourceLogicalRoot, destination.ResourcePublicationPolicy), cancellationToken);
@@ -1891,7 +1907,8 @@ public class CUE4ParseViewModel : ViewModel
 
     public static UESceneProducedResource CreateUESceneProducedResource(string meshFileName, byte[] modelBytes,
         IEnumerable<(uint SourceLodIndex, float SourceScreenSize)> lods, ResourceManifest? manifest,
-        IEnumerable<UESceneProducedMaterialSlot>? materialSlots = null)
+        IEnumerable<UESceneProducedMaterialSlot>? materialSlots = null,
+        IEnumerable<UESceneProducedDiagnostic>? diagnostics = null)
     {
         var sidecars = manifest?.Resources.Where(resource => resource.IsExternal).Select(resource => new UESceneProducedSidecar(
             resource.UnrealObjectPath,
@@ -1899,7 +1916,7 @@ public class CUE4ParseViewModel : ViewModel
             resource.RelativeUri, resource.Mime, resource.Bytes.ToArray())) ?? [];
         return new UESceneProducedResource(meshFileName, modelBytes,
             lods.Select(lod => new UESceneProducedLod(lod.SourceLodIndex, lod.SourceScreenSize)).ToArray(),
-            sidecars.ToArray(), materialSlots?.ToArray());
+            sidecars.ToArray(), materialSlots?.ToArray(), diagnostics?.ToArray());
     }
 
     private readonly object _rawData = new ();
