@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using AdonisUI.Controls;
+using CUE4Parse.FModelUEFormat.ExportPipeline.Pipeline;
 using FModel.Extensions;
 using FModel.Framework;
 using FModel.Services;
@@ -39,6 +40,18 @@ public class MenuCommand : ViewModelCommand<ApplicationViewModel>
                 break;
             case "Views_3dViewer":
                 contextViewModel.CUE4Parse.SnooperViewer.Run();
+                break;
+            case "Views_ExportSession":
+                Helper.OpenWindow<AdonisWindow>("Export Session", () => new ExportSessionWindow().Show());
+                break;
+            case "V3_MaterialMode_Linked":
+                FModelV3ExportSessionState.Current.MaterialMode = FModelUeFormatMaterialMode.Linked;
+                break;
+            case "V3_MaterialMode_Strict":
+                FModelV3ExportSessionState.Current.MaterialMode = FModelUeFormatMaterialMode.Strict;
+                break;
+            case "V3_MaterialMode_Disabled":
+                FModelV3ExportSessionState.Current.MaterialMode = FModelUeFormatMaterialMode.Disabled;
                 break;
             case "Views_AudioPlayer":
                 Helper.OpenWindow<AdonisWindow>("Audio Player", () => new AudioPlayer().Show());

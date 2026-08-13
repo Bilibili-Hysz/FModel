@@ -1,12 +1,10 @@
 using FModel.Framework;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Linq;
 using System.Text.RegularExpressions;
-using System.Threading;
 using System.Windows;
 using System.Windows.Data;
-using System.Windows.Threading;
 using CUE4Parse.Compression;
 using CUE4Parse.UE4.IO;
 using CUE4Parse.UE4.Objects.Core.Misc;
@@ -16,6 +14,8 @@ namespace FModel.ViewModels;
 
 public class FileItem : ViewModel
 {
+    public string ContainerPath { get; } = string.Empty;
+    public string SourceDirectory { get; } = string.Empty;
     private string _name;
     public string Name
     {
@@ -106,6 +106,8 @@ public class FileItem : ViewModel
 
     public FileItem(IAesVfsReader reader)
     {
+        ContainerPath = FModelV3ContainerIdentity.NormalizeContainerPath(reader.Path);
+        SourceDirectory = System.IO.Directory.GetParent(ContainerPath)?.FullName ?? string.Empty;
         Name = reader.Name;
         Length = reader.Length;
         Guid = reader.EncryptionKeyGuid;
@@ -125,21 +127,11 @@ public class FileItem : ViewModel
 
 public partial class GameDirectoryViewModel : ViewModel
 {
-    private readonly record struct FileItemUpdate(FileItem File, bool IsEnabled, string MountPoint,
-        int FileCount, bool HasMountInfo);
-
-    public readonly RangeObservableCollection<FileItem> DirectoryFiles;
+    public readonly ObservableCollection<FileItem> DirectoryFiles;
 
     public ICollectionView DirectoryFilesView { get; }
 
     private readonly Regex _hiddenArchives = ArchivesRegex();
-    private readonly ConcurrentDictionary<IAesVfsReader, FileItem> _filesByReader =
-        new(ReferenceEqualityComparer.Instance);
-    private readonly ConcurrentQueue<FileItem> _pendingAdditions = new();
-    private readonly ConcurrentQueue<FileItemUpdate> _pendingUpdates = new();
-    private FileItem _looseFilesContainer;
-    private int _pendingLooseFileCount;
-    private int _publishScheduled;
 
     public GameDirectoryViewModel()
     {
@@ -159,11 +151,12 @@ public partial class GameDirectoryViewModel : ViewModel
         if (!_hiddenArchives.IsMatch(reader.Name)) return;
 
         var fileItem = new FileItem(reader);
-        if (!_filesByReader.TryAdd(reader, fileItem))
-            return;
-
-        _pendingAdditions.Enqueue(fileItem);
-        SchedulePublish();
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            if (DirectoryFiles.Any(item => string.Equals(item.ContainerPath, fileItem.ContainerPath, System.StringComparison.OrdinalIgnoreCase)))
+                return;
+            DirectoryFiles.Add(fileItem);
+        });
     }
 
     public void AddLooseFiles(int fileCount)
@@ -171,78 +164,33 @@ public partial class GameDirectoryViewModel : ViewModel
         if (fileCount < 1)
             return;
 
-        Interlocked.Add(ref _pendingLooseFileCount, fileCount);
-        SchedulePublish();
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            var looseFilesContainer = DirectoryFiles.FirstOrDefault(x => x.IsLooseFilesContainer);
+            if (looseFilesContainer is not null)
+            {
+                looseFilesContainer.FileCount += fileCount;
+            }
+            else
+            {
+                DirectoryFiles.Add(new FileItem("Loose Files", fileCount, 0, true));
+            }
+        });
     }
 
     public void Verify(IAesVfsReader reader)
     {
-        if (!_filesByReader.TryGetValue(reader, out var file)) return;
+        if (DirectoryFiles.FirstOrDefault(x => string.Equals(x.ContainerPath, FModelV3ContainerIdentity.NormalizeContainerPath(reader.Path), System.StringComparison.OrdinalIgnoreCase)) is not { } file) return;
 
-        _pendingUpdates.Enqueue(new FileItemUpdate(file, true, reader.MountPoint, reader.FileCount, true));
-        SchedulePublish();
+        file.IsEnabled = true;
+        file.MountPoint = reader.MountPoint;
+        file.FileCount = reader.FileCount;
     }
 
     public void Disable(IAesVfsReader reader)
     {
-        if (!_filesByReader.TryGetValue(reader, out var file)) return;
-
-        _pendingUpdates.Enqueue(new FileItemUpdate(file, false, string.Empty, 0, false));
-        SchedulePublish();
-    }
-
-    public void FlushPendingChanges()
-    {
-        if (Application.Current.Dispatcher.CheckAccess())
-            PublishPendingChanges();
-        else
-            Application.Current.Dispatcher.Invoke(PublishPendingChanges);
-    }
-
-    private void SchedulePublish()
-    {
-        if (Interlocked.CompareExchange(ref _publishScheduled, 1, 0) != 0)
-            return;
-
-        _ = Application.Current.Dispatcher.BeginInvoke(PublishPendingChanges, DispatcherPriority.Background);
-    }
-
-    private void PublishPendingChanges()
-    {
-        var additions = new List<FileItem>();
-        while (_pendingAdditions.TryDequeue(out var file))
-            additions.Add(file);
-
-        var looseFileCount = Interlocked.Exchange(ref _pendingLooseFileCount, 0);
-        if (looseFileCount > 0)
-        {
-            if (_looseFilesContainer is null)
-            {
-                _looseFilesContainer = new FileItem("Loose Files", looseFileCount, 0, true);
-                additions.Add(_looseFilesContainer);
-            }
-            else
-            {
-                _looseFilesContainer.FileCount += looseFileCount;
-            }
-        }
-
-        if (additions.Count > 0)
-            DirectoryFiles.AddRange(additions);
-
-        while (_pendingUpdates.TryDequeue(out var update))
-        {
-            update.File.IsEnabled = update.IsEnabled;
-            if (!update.HasMountInfo)
-                continue;
-
-            update.File.MountPoint = update.MountPoint;
-            update.File.FileCount = update.FileCount;
-        }
-
-        Interlocked.Exchange(ref _publishScheduled, 0);
-        if (!_pendingAdditions.IsEmpty || !_pendingUpdates.IsEmpty || Volatile.Read(ref _pendingLooseFileCount) > 0)
-            SchedulePublish();
+        if (DirectoryFiles.FirstOrDefault(x => string.Equals(x.ContainerPath, FModelV3ContainerIdentity.NormalizeContainerPath(reader.Path), System.StringComparison.OrdinalIgnoreCase)) is not { } file) return;
+        file.IsEnabled = false;
     }
 
     [GeneratedRegex(@"^(?!global|pakchunk.+(optional|ondemand)\-).+(pak|utoc)$", RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.CultureInvariant)]

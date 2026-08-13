@@ -69,9 +69,10 @@ public class GameSelectorViewModel : ViewModel
     public void AddUndetectedDir(string gameDirectory) => AddUndetectedDir(gameDirectory.SubstringAfterLast('\\'), gameDirectory);
     public void AddUndetectedDir(string gameName, string gameDirectory)
     {
-        TryDetectUeVersion(gameDirectory, out var ueVersion, out var newGameDirectory);
-        if (!string.IsNullOrEmpty(newGameDirectory))
-            gameDirectory = newGameDirectory;
+        if (TryDetectUeVersion(gameDirectory, out var ueVersion, out var newGameDirectory))
+        {
+            // gameDirectory = newGameDirectory; // directory was changed to point to the correct paks folder
+        }
 
         var setting = DirectorySettings.Default(gameName, gameDirectory, true, ueVersion);
         UserSettings.Default.PerDirectory[gameDirectory] = setting;
@@ -79,49 +80,17 @@ public class GameSelectorViewModel : ViewModel
         SelectedDirectory = DetectedDirectories.Last();
     }
 
-    public static bool NormalizeManualGameDirectories()
-    {
-        var migrated = false;
-        foreach (var setting in UserSettings.Default.PerDirectory.Values.Where(setting => setting.IsManual).ToList())
-        {
-            if (!TryResolvePaksDirectory(setting.GameDirectory, out var paksDirectory) ||
-                string.Equals(setting.GameDirectory, paksDirectory, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            var oldGameDirectory = setting.GameDirectory;
-            var existingPaksEntry = UserSettings.Default.PerDirectory.FirstOrDefault(pair =>
-                string.Equals(pair.Key, paksDirectory, StringComparison.OrdinalIgnoreCase));
-            if (existingPaksEntry.Key != null)
-            {
-                UserSettings.Default.PerDirectory.Remove(oldGameDirectory);
-                if (string.Equals(UserSettings.Default.GameDirectory, oldGameDirectory, StringComparison.OrdinalIgnoreCase))
-                    UserSettings.Default.GameDirectory = existingPaksEntry.Value.GameDirectory;
-                if (string.Equals(UserSettings.Default.CurrentDir?.GameDirectory, oldGameDirectory, StringComparison.OrdinalIgnoreCase))
-                    UserSettings.Default.CurrentDir = existingPaksEntry.Value;
-                migrated = true;
-                continue;
-            }
-
-            UserSettings.Default.PerDirectory.Remove(oldGameDirectory);
-            setting.GameDirectory = paksDirectory;
-            UserSettings.Default.PerDirectory[paksDirectory] = setting;
-            if (string.Equals(UserSettings.Default.GameDirectory, oldGameDirectory, StringComparison.OrdinalIgnoreCase))
-                UserSettings.Default.GameDirectory = paksDirectory;
-            migrated = true;
-        }
-
-        return migrated;
-    }
-
     private bool TryDetectUeVersion(string gameDirectory, out EGame ueVersion, [MaybeNullWhen(false)] out string newGameDirectory)
     {
         var targetGameDir = gameDirectory;
         if (!targetGameDir.EndsWith("Paks", StringComparison.OrdinalIgnoreCase))
         {
-            if (TryResolvePaksDirectory(targetGameDir, out var paksDirectory))
+            var dirs = Directory.GetDirectories(targetGameDir, "Paks", SearchOption.AllDirectories);
+            var paksDir = dirs.Length == 1 ? dirs[0] : dirs.FirstOrDefault(x => !x.EndsWith("Engine\\Programs\\CrashReportClient\\Content\\Paks"));
+            if (!string.IsNullOrEmpty(paksDir))
             {
-                Log.Warning("Selected directory \"{GameDirectory}\" does not end with \"Paks\". Looking in \"{PaksDir}\" instead.", targetGameDir, paksDirectory);
-                targetGameDir = paksDirectory;
+                Log.Warning("Selected directory \"{GameDirectory}\" does not end with \"Paks\". Looking in \"{PaksDir}\" instead.", targetGameDir, paksDir);
+                targetGameDir = paksDir;
             }
 
             if (Directory.GetFiles(gameDirectory, "*.exe") is { Length: 1 } exe && TryGetUeVersionFromExe(exe[0], out ueVersion))
@@ -165,50 +134,32 @@ public class GameSelectorViewModel : ViewModel
             }
         }
 
-        var crashReportClientExe = Path.Combine(projectDir, "..", "Engine", "Binaries", "Win64", "CrashReportClient.exe");
-        if (File.Exists(crashReportClientExe) && TryGetUeVersionFromExe(crashReportClientExe, out ueVersion))
+        var projectEngineBinariesDir = Path.Combine(projectDir, "..", "Engine", "Binaries", "Win64");
+
+        if (Directory.Exists(projectEngineBinariesDir))
         {
-            Log.Information("Detected UE version {UeVersion} from \"{Exe}\"", ueVersion, crashReportClientExe);
-            return true;
+            var crashReportClientExe = Path.Combine(projectEngineBinariesDir, "CrashReportClient.exe");
+            if (File.Exists(crashReportClientExe) && TryGetUeVersionFromExe(crashReportClientExe, out ueVersion))
+            {
+                Log.Information("Detected UE version {UeVersion} from \"{Exe}\"", ueVersion, crashReportClientExe);
+                return true;
+            }
+            if (Directory.GetFiles(projectEngineBinariesDir, "*-Win64-Shipping.exe") is { Length: > 0 } shipping)
+            {
+                foreach (var exe in shipping)
+                {
+                    if (TryGetUeVersionFromExe(exe, out ueVersion))
+                    {
+                        Log.Information("Detected UE version {UeVersion} from \"{Exe}\"", ueVersion, exe);
+                        return true;
+                    }
+                }
+            }
         }
 
         ueVersion = EGame.GAME_UE4_LATEST;
         Log.Warning("Failed to detect UE version for \"{GameDirectory}\".", gameDirectory);
         return false;
-    }
-
-    private static bool TryResolvePaksDirectory(string gameDirectory, [MaybeNullWhen(false)] out string paksDirectory)
-    {
-        paksDirectory = null;
-        if (string.IsNullOrWhiteSpace(gameDirectory) || !Directory.Exists(gameDirectory))
-            return false;
-
-        if (gameDirectory.EndsWith("Paks", StringComparison.OrdinalIgnoreCase))
-        {
-            paksDirectory = gameDirectory;
-            return true;
-        }
-
-        string[] candidates;
-        try
-        {
-            candidates = Directory.GetDirectories(gameDirectory, "Paks", SearchOption.AllDirectories)
-                .Where(directory => !directory.EndsWith("Engine\\Programs\\CrashReportClient\\Content\\Paks", StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-        }
-        catch (IOException)
-        {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return false;
-        }
-        if (candidates.Length != 1)
-            return false;
-
-        paksDirectory = candidates[0];
-        return true;
     }
 
     private bool TryGetUeVersionFromExe(string exePath, out EGame ueVersion)

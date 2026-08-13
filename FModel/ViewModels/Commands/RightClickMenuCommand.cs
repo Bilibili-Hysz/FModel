@@ -43,6 +43,7 @@ public class RightClickMenuCommand : ViewModelCommand<ApplicationViewModel>
         if (param.Length == 0) return;
 
         var folders = param.OfType<TreeItem>().ToArray();
+        var containers = param.OfType<FileItem>().ToArray();
         var assets = param
             .Select(static item => item switch
             {
@@ -52,12 +53,35 @@ public class RightClickMenuCommand : ViewModelCommand<ApplicationViewModel>
             })
             .Where(static gf => gf is not null).ToArray();
 
-        if (trigger == "Save_UEScene_Bundle")
-            assets = UESceneEligibility.FilterEligible(param);
-
-        if (folders.Length == 0 && assets.Length == 0)
+        if (folders.Length == 0 && containers.Length == 0 && assets.Length == 0)
             return;
 
+        if (trigger is "Export_Container_Output" or "Export_Container_Source")
+        {
+            if (containers.Length == 0) return;
+
+            var destination = trigger == "Export_Container_Output"
+                ? FModelV3ContainerExportDestination.Output
+                : FModelV3ContainerExportDestination.SourceDirectory;
+            if (destination == FModelV3ContainerExportDestination.Output &&
+                FModelV3ContainerIdentity.HasDuplicateBasenames(containers.Select(static item => item.ContainerPath)))
+                return;
+
+            var selection = FModelV3ContainerExportRequest.Create(
+                containers.Select(static item => item.ContainerPath),
+                destination,
+                UserSettings.Default.GameDirectory);
+            var runRequest = FModelV3ContainerBatchRunRequest.Create(
+                selection,
+                UserSettings.Default.OutputDirectory,
+                UserSettings.GetExportOptions());
+
+            await _threadWorkerView.Begin(cancellationToken =>
+            {
+                contextViewModel.CUE4Parse.RunV3ContainerBatchAsync(runRequest, cancellationToken).GetAwaiter().GetResult();
+            });
+            return;
+        }
         var assetsGroups = assets.GroupBy(static gf => gf.Directory);
         var (action, showtype, bulktype) = trigger switch
         {
@@ -70,7 +94,7 @@ public class RightClickMenuCommand : ViewModelCommand<ApplicationViewModel>
             "Save_Properties" => (EAction.Export, EShowAssetType.None, EBulkType.Properties),
             "Save_Textures" => (EAction.Export, EShowAssetType.None, EBulkType.Textures),
             "Save_Models" => (EAction.Export, EShowAssetType.None, EBulkType.Meshes),
-            "Save_UEScene_Bundle" => (EAction.Export, EShowAssetType.None, EBulkType.None),
+            "Save_Worlds" => (EAction.Export, EShowAssetType.None, EBulkType.Worlds),
             "Save_Animations" => (EAction.Export, EShowAssetType.None, EBulkType.Animations),
             "Save_Audio" => (EAction.Export, EShowAssetType.None, EBulkType.Audio),
             "Save_Code" => (EAction.Export, EShowAssetType.None, EBulkType.Code),
@@ -82,28 +106,6 @@ public class RightClickMenuCommand : ViewModelCommand<ApplicationViewModel>
         Interlocked.Exchange(ref contextViewModel.CUE4Parse.FailedExportCount, 0);
         await _threadWorkerView.Begin(cancellationToken =>
         {
-            if (trigger == "Save_UEScene_Bundle")
-            {
-                foreach (var entry in assets)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    try
-                    {
-                        contextViewModel.CUE4Parse.SaveUESceneBundle(cancellationToken, entry, false);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        Interlocked.Increment(ref contextViewModel.CUE4Parse.FailedExportCount);
-                        FLogger.Append(ELog.Error, () => FLogger.Text($"Could not save UEScene bundle for '{entry.Name}': {ex.Message}", Constants.WHITE, true));
-                    }
-                }
-                return;
-            }
-
             if (action is EAction.Show)
             {
                 if (showtype is EShowAssetType.References)
@@ -134,6 +136,7 @@ public class RightClickMenuCommand : ViewModelCommand<ApplicationViewModel>
                 EBulkType.Properties => (UserSettings.Default.PropertiesDirectory, "json files"),
                 EBulkType.Textures => (UserSettings.Default.TextureDirectory, "textures"),
                 EBulkType.Meshes => (UserSettings.Default.ModelDirectory, "models"),
+                EBulkType.Worlds => (UserSettings.Default.ModelDirectory, "worlds"),
                 EBulkType.Animations => (UserSettings.Default.ModelDirectory, "animations"),
                 EBulkType.Audio => (UserSettings.Default.AudioDirectory, "audio files"),
                 EBulkType.Code => (UserSettings.Default.CodeDirectory, "code files"),
@@ -152,16 +155,17 @@ public class RightClickMenuCommand : ViewModelCommand<ApplicationViewModel>
             foreach (var folder in folders)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var queuedBefore = ExportSessionViewModel.Instance.Session.TotalQueued;
                 folderAction(folder);
 
                 var path = Path.Combine(dirType, UserSettings.Default.KeepDirectoryStructure ? folder.PathAtThisPoint : folder.PathAtThisPoint.SubstringAfterLast('/')).Replace('\\', '/');
-                LogExport(contextViewModel, folder.PathAtThisPoint, path, dirType, filetype);
+                LogExport(contextViewModel, folder.PathAtThisPoint, path, dirType, filetype, queuedBefore);
             }
 
-            Action<GameFile, EBulkType, bool> fileAction = bulktype switch
+            Action<GameFile, EBulkType> fileAction = bulktype switch
             {
-                EBulkType.Raw => (entry, _, update) => contextViewModel.CUE4Parse.ExportData(entry, !update),
-                _ => (entry, bulk, update) => contextViewModel.CUE4Parse.Extract(cancellationToken, entry, false, bulk),
+                EBulkType.Raw => (entry, _) => contextViewModel.CUE4Parse.ExportData(entry),
+                _ => (entry, bulk) => contextViewModel.CUE4Parse.Extract(cancellationToken, entry, false, bulk),
             };
 
             foreach (var group in assetsGroups)
@@ -170,30 +174,44 @@ public class RightClickMenuCommand : ViewModelCommand<ApplicationViewModel>
                 var list = group.ToArray();
                 var update = list.Length > 1;
                 var bulk = bulktype | (update ? EBulkType.Auto : EBulkType.None);
+                var queuedBefore = ExportSessionViewModel.Instance.Session.TotalQueued;
                 foreach (var entry in list)
                 {
                     Thread.Yield();
                     cancellationToken.ThrowIfCancellationRequested();
-                    fileAction(entry, bulk, update);
+                    fileAction(entry, bulk);
                 }
 
                 if (update)
                 {
                     var path = Path.Combine(dirType, UserSettings.Default.KeepDirectoryStructure ? directory : directory.SubstringAfterLast('/')).Replace('\\', '/');
-                    LogExport(contextViewModel, directory, path, dirType, filetype);
+                    LogExport(contextViewModel, directory, path, dirType, filetype, queuedBefore);
                 }
             }
         });
+
+        if (action is EAction.Export)
+        {
+            await ExportSessionViewModel.Instance.ExportAutomaticallyAsync();
+        }
     }
 
-    private void LogExport(ApplicationViewModel contextViewModel, string directory, string path, string basePath, string fileType)
+    private void LogExport(ApplicationViewModel contextViewModel, string directory, string path, string basePath, string fileType, int queuedBefore = 0)
     {
+        var queuedDelta = ExportSessionViewModel.Instance.Session.TotalQueued - queuedBefore;
         if (contextViewModel.CUE4Parse.ExportedCount > 0)
         {
             FLogger.Append(ELog.Information, () =>
             {
                 FLogger.Text($"Successfully exported {contextViewModel.CUE4Parse.ExportedCount} {fileType} from ", Constants.WHITE);
                 FLogger.Link(directory, Path.Exists(path) ? path : basePath, true);
+            });
+        }
+        else if (queuedDelta > 0)
+        {
+            FLogger.Append(ELog.Information, () =>
+            {
+                FLogger.Text($"Queued {queuedDelta} {fileType} for export from {directory}{(UserSettings.Default.ExportImmediately ? ", exporting automatically..." : "")}", Constants.WHITE, true);
             });
         }
         else if (contextViewModel.CUE4Parse.FailedExportCount == 0)

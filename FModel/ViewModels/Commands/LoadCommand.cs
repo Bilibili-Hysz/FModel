@@ -120,7 +120,7 @@ public class LoadCommand : ViewModelCommand<LoadingModesViewModel>
         if (directoryFiles == null) filter = null;
         else
         {
-            filter = [];
+            filter = new(StringComparer.OrdinalIgnoreCase);
             foreach (var directoryFile in directoryFiles)
             {
                 if (!directoryFile.IsEnabled) continue;
@@ -129,7 +129,7 @@ public class LoadCommand : ViewModelCommand<LoadingModesViewModel>
                     includeLooseFiles = true;
                     continue;
                 }
-                filter.Add(directoryFile.Name);
+                filter.Add(FModelV3ContainerIdentity.NormalizeContainerPath(directoryFile.ContainerPath));
             }
         }
 
@@ -144,7 +144,7 @@ public class LoadCommand : ViewModelCommand<LoadingModesViewModel>
 
             if (hasSelection)
             {
-                if (asset is VfsEntry entry && filter.Contains(entry.Vfs.Name))
+                if (asset is VfsEntry entry && filter.Contains(FModelV3ContainerIdentity.NormalizeContainerPath(entry.Vfs.Path)))
                 {
                     entries.Add(asset);
                 }

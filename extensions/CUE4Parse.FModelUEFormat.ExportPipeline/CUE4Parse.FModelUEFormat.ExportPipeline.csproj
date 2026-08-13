@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>CUE4Parse.FModelUEFormat.ExportPipeline</RootNamespace>
+    <AssemblyName>CUE4Parse.FModelUEFormat.ExportPipeline</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../CUE4Parse.FModelUEFormat/CUE4Parse.FModelUEFormat.csproj" />
+  </ItemGroup>
+
+  <!-- The disposable new-source composition sets NewPipelineCUE4ParseRoot to its CUE4Parse checkout. The composition injects CUE4Parse-Conversion/CUE4Parse-Conversion.csproj. -->
+  <PropertyGroup Condition="'$(NewPipelineCUE4ParseRoot)' == '' and '$(NewPipelineRoot)' != ''">
+    <NewPipelineCUE4ParseRoot>$(NewPipelineRoot)</NewPipelineCUE4ParseRoot>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(NewPipelineCUE4ParseRoot)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\CUE4Parse\CUE4Parse\CUE4Parse.csproj') and Exists('$(MSBuildThisFileDirectory)..\..\CUE4Parse\CUE4Parse-Conversion\CUE4Parse-Conversion.csproj')">
+    <!-- Disposable compositions place this project under /extensions and the
+         exact upstream checkout under /CUE4Parse. Auto-detect that layout so
+         a normal FModel build does not depend on an undocumented CLI property. -->
+    <NewPipelineCUE4ParseRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\CUE4Parse'))</NewPipelineCUE4ParseRoot>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(NewPipelineCUE4ParseRoot)' != ''">
+    <NewPipelineCoreProject>$(NewPipelineCUE4ParseRoot)\CUE4Parse\CUE4Parse.csproj</NewPipelineCoreProject>
+    <NewPipelineConversionProject>$(NewPipelineCUE4ParseRoot)\CUE4Parse-Conversion\CUE4Parse-Conversion.csproj</NewPipelineConversionProject>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(NewPipelineCUE4ParseRoot)' != ''">
+    <!-- CUE4Parse-Conversion does not make its upstream CUE4Parse reference a
+         compile-time dependency for every SDK/MSBuild graph. Keep both direct
+         references explicit so typed UE4 exports resolve in the adapter. -->
+    <ProjectReference Include="$(NewPipelineCoreProject)" />
+    <ProjectReference Include="$(NewPipelineConversionProject)" />
+  </ItemGroup>
+
+  <!-- Upstream-dependent NP2+ sources compile only inside a new-source composition. -->
+  <ItemGroup>
+    <Compile Remove="Exporters/**/*.cs" />
+    <Compile Remove="Formats/**/*.cs" />
+    <Compile Remove="World/**/*.cs" />
+    <Compile Remove="Materials/FModelMaterialProjectionBuilder.cs" />
+    <Compile Remove="Materials/FModelMaterialUriResolver.cs" />
+    <Compile Remove="Materials/FModelTextureExportPreview.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(NewPipelineCUE4ParseRoot)' != ''">
+    <Compile Include="Exporters/**/*.cs" />
+    <Compile Include="Formats/**/*.cs" />
+    <Compile Include="Materials/FModelMaterialProjectionBuilder.cs" />
+    <Compile Include="Materials/FModelMaterialUriResolver.cs" />
+    <Compile Include="Materials/FModelTextureExportPreview.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
+  </ItemGroup></Project>

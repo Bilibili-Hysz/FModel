@@ -6,13 +6,13 @@ using System.Threading;
 using System.Windows;
 using CUE4Parse_Conversion.Animations;
 using CUE4Parse_Conversion.Meshes;
+using CUE4Parse_Conversion.Options;
 using CUE4Parse.UE4.Assets.Exports;
 using CUE4Parse.UE4.Assets.Exports.Animation;
 using CUE4Parse.UE4.Assets.Exports.Component.SplineMesh;
 using CUE4Parse.UE4.Assets.Exports.Component.StaticMesh;
 using CUE4Parse.UE4.Assets.Exports.GeometryCollection;
 using CUE4Parse.UE4.Assets.Exports.Material;
-using CUE4Parse.UE4.Assets.Exports.Nanite;
 using CUE4Parse.UE4.Assets.Exports.SkeletalMesh;
 using CUE4Parse.UE4.Assets.Exports.StaticMesh;
 using CUE4Parse.UE4.Assets.Exports.Texture;
@@ -29,7 +29,6 @@ using FModel.Views.Snooper.Lights;
 using FModel.Views.Snooper.Models;
 using FModel.Views.Snooper.Shading;
 using OpenTK.Windowing.GraphicsLibraryFramework;
-using UModel = FModel.Views.Snooper.Models.UModel;
 
 namespace FModel.Views.Snooper;
 
@@ -161,9 +160,10 @@ public class Renderer : IDisposable
         model.Skeleton.Animate(animSet);
         Options.AddAnimation(animation);
 
-        foreach (var notifyEvent in animBase.Notifies)
+        foreach (var notifyEvent in animBase.Notifies ?? [])
         {
-            if (!notifyEvent.NotifyStateClass.TryLoad(out UObject notifyClass) ||
+            if (notifyEvent.NotifyStateClass is null ||
+                !notifyEvent.NotifyStateClass.TryLoad(out UObject notifyClass) ||
                 !notifyClass.TryGetValue(out UObject export, "SkeletalMeshProp", "StaticMeshProp", "Mesh", "SkeletalMeshTemplate"))
                 continue;
 
@@ -175,7 +175,7 @@ public class Renderer : IDisposable
                 t.Scale = offset.Scale3D;
             }
 
-            UModel addedModel = null;
+            IRenderableModel addedModel = null;
             switch (export)
             {
                 case UStaticMesh st:
@@ -185,7 +185,7 @@ public class Renderer : IDisposable
                     {
                         addedModel.AddInstance(t);
                     }
-                    else if (st.TryConvert(out var mesh))
+                    else if (st.TryConvert(out var mesh, EMeshQuality.Highest))
                     {
                         addedModel = new StaticModel(st, mesh, t);
                         Options.Models[guid] = addedModel;
@@ -195,7 +195,7 @@ public class Renderer : IDisposable
                 case USkeletalMesh sk:
                 {
                     guid = Guid.NewGuid();
-                    if (!Options.Models.ContainsKey(guid) && sk.TryConvert(out var mesh))
+                    if (!Options.Models.ContainsKey(guid) && sk.TryConvert(out var mesh, EMeshQuality.Highest))
                     {
                         addedModel = new SkeletalModel(sk, mesh, t);
                         Options.Models[guid] = addedModel;
@@ -344,7 +344,7 @@ public class Renderer : IDisposable
             wnd.WindowShouldClose(true, true);
     }
 
-    private void LoadStaticMesh(UStaticMesh original, ENaniteMeshFormat naniteFormat = ENaniteMeshFormat.OnlyNormalLODs)
+    private void LoadStaticMesh(UStaticMesh original, ENaniteMeshFormat naniteFormat = ENaniteMeshFormat.NoNanite)
     {
         var guid = original.LightingGuid;
         if (Options.TryGetModel(guid, out var model))
@@ -354,7 +354,7 @@ public class Renderer : IDisposable
             return;
         }
 
-        if (!original.TryConvert(out var mesh, naniteFormat))
+        if (!original.TryConvert(out var mesh, EMeshQuality.Highest, naniteFormat))
             return;
 
         Options.Models[guid] = new StaticModel(original, mesh);
@@ -364,7 +364,7 @@ public class Renderer : IDisposable
     private void LoadSkeletalMesh(USkeletalMesh original)
     {
         var guid = new FGuid((uint) original.GetFullName().GetHashCode());
-        if (Options.Models.ContainsKey(guid) || !original.TryConvert(out var mesh)) return;
+        if (Options.Models.ContainsKey(guid) || !original.TryConvert(out var mesh, EMeshQuality.Highest)) return;
 
         var skeletalModel = new SkeletalModel(original, mesh);
         Options.Models[guid] = skeletalModel;
@@ -395,7 +395,7 @@ public class Renderer : IDisposable
             return;
         }
 
-        if (!editorCube.TryConvert(out var mesh))
+        if (!editorCube.TryConvert(out var mesh, EMeshQuality.Highest))
             return;
 
         Options.Models[guid] = new StaticModel(original, mesh);
@@ -532,18 +532,19 @@ public class Renderer : IDisposable
 
     private void WorldMesh(IPropertyHolder actor, Transform transform, bool forceShow = false)
     {
-        var staticMeshComponents = GetStaticMeshComponents(actor);
-        if (staticMeshComponents.Count > 0)
+        if (actor.TryGetValue(out FPackageIndex[] instanceComponents, "InstanceComponents"))
         {
-            foreach (var staticMeshComp in staticMeshComponents)
+            foreach (var component in instanceComponents)
             {
-                if (staticMeshComp.GetLoadedStaticMesh() is not { Materials.Length: > 0 } m)
+                if (!component.TryLoad(out UStaticMeshComponent staticMeshComp) ||
+                    !staticMeshComp.GetStaticMesh().TryLoad(out UStaticMesh m) || m.Materials.Length < 1)
                     continue;
 
                 var relation = CalculateTransform(staticMeshComp, transform);
-                if (staticMeshComp is UInstancedStaticMeshComponent instancedStaticMeshComp && instancedStaticMeshComp.GetInstances() is { Length: > 0 } instances)
+                if (staticMeshComp is UInstancedStaticMeshComponent { PerInstanceSMData.Length: > 0 } instancedStaticMeshComp)
                 {
-                    foreach (var perInstanceData in instances)
+
+                    foreach (var perInstanceData in instancedStaticMeshComp.PerInstanceSMData)
                     {
                         ProcessMesh(actor, instancedStaticMeshComp, m, new Transform
                         {
@@ -575,30 +576,11 @@ public class Renderer : IDisposable
             }
         }
         else if (actor.TryGetValue(out FPackageIndex staticMeshComponent, "StaticMeshComponent", "ComponentTemplate", "StaticMesh", "Mesh", "LightMesh", "SplineMesh") &&
-                  staticMeshComponent.TryLoad(out UStaticMeshComponent staticMeshComp) &&
-                  staticMeshComp.GetStaticMesh().TryLoad(out UStaticMesh m) && m.Materials.Length > 0)
+                 staticMeshComponent.TryLoad(out UStaticMeshComponent staticMeshComp) &&
+                 staticMeshComp.GetStaticMesh().TryLoad(out UStaticMesh m) && m.Materials.Length > 0)
         {
             ProcessMesh(actor, staticMeshComp, m, CalculateTransform(staticMeshComp, transform));
         }
-    }
-
-    private static List<UStaticMeshComponent> GetStaticMeshComponents(IPropertyHolder actor)
-    {
-        var result = new List<UStaticMeshComponent>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        void Add(FPackageIndex component)
-        {
-            if (component.TryLoad(out UStaticMeshComponent staticMeshComponent) && seen.Add(staticMeshComponent.GetPathName()))
-                result.Add(staticMeshComponent);
-        }
-
-        if (actor.TryGetValue(out FPackageIndex rootComponent, "RootComponent")) Add(rootComponent);
-        foreach (var property in new[] { "OwnedComponents", "InstanceComponents", "Components" })
-        {
-            if (!actor.TryGetValue(out FPackageIndex[] components, property)) continue;
-            foreach (var component in components) Add(component);
-        }
-        return result;
     }
 
     private void ProcessMesh(IPropertyHolder actor, UStaticMeshComponent staticMeshComp, UStaticMesh m, Transform transform)
@@ -609,14 +591,14 @@ public class Renderer : IDisposable
     private void ProcessMesh(IPropertyHolder actor, UObject staticMeshComp, UStaticMesh m, Transform transform, bool forceShow)
     {
         var bSpline = staticMeshComp is USplineMeshComponent;
-        var guid = GetWorldMeshGuid(m, staticMeshComp);
+        var guid = m.LightingGuid;
         if (Options.TryGetModel(guid, out var model))
         {
             model.AddInstance(transform);
             if (bSpline && model is SplineModel splineModel)
                 splineModel.AddComponent((USplineMeshComponent)staticMeshComp);
         }
-        else if (m.TryConvert(out var mesh, UserSettings.Default.NaniteMeshExportFormat))
+        else if (m.TryConvert(out var mesh, EMeshQuality.Highest, UserSettings.Default.NaniteMeshExportFormat))
         {
             model = bSpline ? new SplineModel(m, mesh, (USplineMeshComponent)staticMeshComp, transform) : new StaticModel(m, mesh, transform);
             model.IsTwoSided = actor.GetOrDefault("bMirrored", staticMeshComp.GetOrDefault("bDisallowMeshPaintPerInstance", model.IsTwoSided));
@@ -691,17 +673,6 @@ public class Renderer : IDisposable
         }
     }
 
-    private static FGuid GetWorldMeshGuid(UStaticMesh mesh, UObject component)
-    {
-        if (!component.TryGetValue(out FPackageIndex[] overrides, "OverrideMaterials") || overrides.Length == 0)
-            return mesh.LightingGuid;
-
-        var signature = string.Join("|", overrides.Select(material => material.Load<UObject>()?.GetPathName() ?? ""));
-        var hash = StringComparer.Ordinal.GetHashCode(signature);
-        return new FGuid(mesh.LightingGuid.A ^ (uint) hash, mesh.LightingGuid.B,
-            mesh.LightingGuid.C, mesh.LightingGuid.D ^ 0x4D41544Fu);
-    }
-
     private Transform CalculateTransform(IPropertyHolder staticMeshComp, Transform relation)
     {
         if (staticMeshComp.TryGetValue(out FPackageIndex ap, "AttachParent") && ap.TryLoad(out UObject component))
@@ -742,7 +713,7 @@ public class Renderer : IDisposable
                     continue;
 
                 var parameters = new CMaterialParams2();
-                unrealMaterial.GetParams(parameters, EMaterialFormat.FirstLayer);
+                unrealMaterial.GetParams(parameters, EMaterialDepth.TopLayerOnly);
 
                 if (!parameters.TryGetLinearColor(out var color, "Color"))
                     color = FLinearColor.Gray;
@@ -755,7 +726,7 @@ public class Renderer : IDisposable
             if (!material.TryLoad(out UMaterialInterface unrealMaterial)) continue;
 
             var parameters = new CMaterialParams2();
-            unrealMaterial.GetParams(parameters, EMaterialFormat.FirstLayer);
+            unrealMaterial.GetParams(parameters, EMaterialDepth.TopLayerOnly);
 
             if (!byte.TryParse(material.Name.SubstringAfterLast("_"), out var indexAsByte))
                 indexAsByte = byte.MaxValue;
