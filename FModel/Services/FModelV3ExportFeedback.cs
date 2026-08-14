@@ -100,6 +100,68 @@ internal static class FModelV3ExportFeedback
                 true));
     }
 
+    internal static void ReportContainerRouteUnavailable(string message)
+    {
+        if (FLogger.Logger is null)
+            return;
+
+        FLogger.Append(ELog.Warning, () =>
+            FLogger.Text(message, FModel.Constants.WHITE, true));
+    }
+
+    internal static void ReportRawContainerStarted(string containerName, string destinationDirectory)
+    {
+        if (FLogger.Logger is null)
+            return;
+
+        FLogger.Append(ELog.Information, () =>
+        {
+            FLogger.Text($"Raw container extraction started: {containerName} -> ", FModel.Constants.WHITE);
+            FLogger.Link(Path.GetFileName(destinationDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)), destinationDirectory, true);
+        });
+    }
+
+    internal static void ReportRawFileFailure(string containerName, string filePath, Exception error)
+    {
+        if (FLogger.Logger is null)
+            return;
+
+        FLogger.Append(ELog.Error, () =>
+            FLogger.Text($"Raw container file failed: {containerName} / {filePath}: {error.Message}", FModel.Constants.WHITE, true));
+    }
+
+    internal static void ReportRawContainerCompleted(FModelV3ContainerRawRunSummary summary)
+    {
+        ArgumentNullException.ThrowIfNull(summary);
+        if (FLogger.Logger is null)
+            return;
+
+        var succeeded = summary.Succeeded;
+        FLogger.Append(succeeded ? ELog.Information : ELog.Error, () =>
+        {
+            var status = succeeded ? "completed" : "completed with errors";
+            FLogger.Text(
+                $"Raw container extraction {status}: {summary.ContainerName}; files={summary.ExportedFileCount}/{summary.CandidateFileCount}, failures={summary.Failures.Count} -> ",
+                FModel.Constants.WHITE);
+            FLogger.Link(Path.GetFileName(summary.DestinationDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)), summary.DestinationDirectory, true);
+        });
+    }
+
+    internal static void ReportRawBatchCompleted(FModelV3ContainerRawBatchRunSummary summary)
+    {
+        ArgumentNullException.ThrowIfNull(summary);
+        if (FLogger.Logger is null)
+            return;
+
+        var succeeded = summary.Succeeded;
+        FLogger.Append(succeeded ? ELog.Information : ELog.Error, () =>
+            FLogger.Text(
+                $"Raw container batch extraction {(succeeded ? "completed" : "completed with errors")}: " +
+                $"containers={summary.ContainerCount}, files={summary.ExportedFileCount}/{summary.CandidateFileCount}, failures={summary.FailedFileCount}",
+                FModel.Constants.WHITE,
+                true));
+    }
+
     internal static void Report(IReadOnlyList<ExportResult> results, string exportDirectory, bool isUeFormatSession,
         string operationId)
     {

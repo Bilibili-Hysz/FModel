@@ -42,7 +42,8 @@ internal static class FModelV3ContainerIdentity
         var name = Path.GetFileName(containerName.Trim());
         var extension = Path.GetExtension(name);
         return extension.Equals(".pak", StringComparison.OrdinalIgnoreCase) ||
-               extension.Equals(".utoc", StringComparison.OrdinalIgnoreCase)
+               extension.Equals(".utoc", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".upak", StringComparison.OrdinalIgnoreCase)
             ? name[..^extension.Length]
             : name;
     }
@@ -106,6 +107,39 @@ internal static class FModelV3ContainerIdentity
             : normalizedRoot + Path.DirectorySeparatorChar;
         if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Destination escapes the selected root.", nameof(directoryName));
+
+        return candidate;
+    }
+
+    /// <summary>
+    /// Resolves a virtual container path below an export root without allowing
+    /// rooted paths, drive-qualified names, traversal, or alternate roots.
+    /// </summary>
+    public static string CombineContainedPath(string root, string virtualPath)
+    {
+        var normalizedRoot = NormalizeContainerPath(root);
+        if (string.IsNullOrWhiteSpace(virtualPath))
+            throw new ArgumentException("Virtual path is required.", nameof(virtualPath));
+
+        var raw = virtualPath.Trim();
+        if (raw.StartsWith("//", StringComparison.Ordinal) || raw.StartsWith(@"\\", StringComparison.Ordinal))
+            throw new ArgumentException("UNC virtual paths are not allowed.", nameof(virtualPath));
+
+        var relative = raw.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
+        relative = relative.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (relative.Length == 0 || Path.IsPathRooted(relative) || !string.IsNullOrEmpty(Path.GetPathRoot(relative)))
+            throw new ArgumentException("Virtual path must be relative.", nameof(virtualPath));
+
+        var segments = relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0 || segments.Any(static segment => segment is "." or ".." || segment.Contains(':')))
+            throw new ArgumentException("Virtual path contains an unsafe segment.", nameof(virtualPath));
+
+        var candidate = Path.GetFullPath(Path.Combine(normalizedRoot, relative));
+        var prefix = normalizedRoot.EndsWith(Path.DirectorySeparatorChar)
+            ? normalizedRoot
+            : normalizedRoot + Path.DirectorySeparatorChar;
+        if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Destination escapes the selected root.", nameof(virtualPath));
 
         return candidate;
     }

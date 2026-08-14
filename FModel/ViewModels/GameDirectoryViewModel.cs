@@ -2,7 +2,6 @@ using FModel.Framework;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
-using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Data;
 using CUE4Parse.Compression;
@@ -16,6 +15,10 @@ public class FileItem : ViewModel
 {
     public string ContainerPath { get; } = string.Empty;
     public string SourceDirectory { get; } = string.Empty;
+    public string ContainerFormat { get; } = string.Empty;
+    public string ContainerFormatDescription { get; } = string.Empty;
+    public bool IsOnDemand { get; }
+    public bool CanExportToSourceDirectory { get; }
     private string _name;
     public string Name
     {
@@ -102,12 +105,18 @@ public class FileItem : ViewModel
         Key = string.Empty;
         MountPoint = string.Empty;
         CompressionMethods = [];
+        ContainerFormat = "Loose files";
+        ContainerFormatDescription = "Loose files; not owned by a Pak or IoStore container.";
+        CanExportToSourceDirectory = false;
     }
 
     public FileItem(IAesVfsReader reader)
     {
         ContainerPath = FModelV3ContainerIdentity.NormalizeContainerPath(reader.Path);
-        SourceDirectory = System.IO.Directory.GetParent(ContainerPath)?.FullName ?? string.Empty;
+        var isPhysical = FModelV3ContainerFormats.CanExportToSourceDirectory(reader);
+        SourceDirectory = isPhysical
+            ? System.IO.Directory.GetParent(ContainerPath)?.FullName ?? string.Empty
+            : "Virtual / streamed";
         Name = reader.Name;
         Length = reader.Length;
         Guid = reader.EncryptionKeyGuid;
@@ -115,8 +124,12 @@ public class FileItem : ViewModel
         IsEnabled = false;
         IsLooseFilesContainer = false;
         Key = string.Empty;
-        FileCount = reader is IoStoreReader storeReader ? (int) storeReader.TocResource.Header.TocEntryCount - 1 : 0;
+        FileCount = reader is IoStoreReader storeReader ? (int) storeReader.TocResource.Header.TocEntryCount - 1 : reader.FileCount;
         CompressionMethods = reader.CompressionMethods;
+        ContainerFormat = FModelV3ContainerFormats.GetDisplayLabel(reader);
+        ContainerFormatDescription = FModelV3ContainerFormats.GetDisplayDescription(reader);
+        IsOnDemand = FModelV3ContainerFormats.IsOnDemand(reader);
+        CanExportToSourceDirectory = isPhysical;
     }
 
     public override string ToString()
@@ -130,8 +143,6 @@ public partial class GameDirectoryViewModel : ViewModel
     public readonly ObservableCollection<FileItem> DirectoryFiles;
 
     public ICollectionView DirectoryFilesView { get; }
-
-    private readonly Regex _hiddenArchives = ArchivesRegex();
 
     public GameDirectoryViewModel()
     {
@@ -148,7 +159,7 @@ public partial class GameDirectoryViewModel : ViewModel
 
     public void Add(IAesVfsReader reader)
     {
-        if (!_hiddenArchives.IsMatch(reader.Name)) return;
+        if (!FModelV3ContainerFormats.ShouldDisplayReader(reader)) return;
 
         var fileItem = new FileItem(reader);
         Application.Current.Dispatcher.Invoke(() =>
@@ -193,6 +204,4 @@ public partial class GameDirectoryViewModel : ViewModel
         file.IsEnabled = false;
     }
 
-    [GeneratedRegex(@"^(?!global|pakchunk.+(optional|ondemand)\-).+(pak|utoc)$", RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.CultureInvariant)]
-    private static partial Regex ArchivesRegex();
 }

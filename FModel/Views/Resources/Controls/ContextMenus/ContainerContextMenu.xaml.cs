@@ -25,12 +25,27 @@ public partial class ContainerContextMenuDictionary
 
         menu.DataContext = listBox.DataContext;
         menu.Tag = listBox.SelectedItems;
-        var containers = listBox.SelectedItems.OfType<FileItem>().ToArray();
+        var containers = listBox.SelectedItems.OfType<FileItem>().Where(static item => !item.IsLooseFilesContainer).ToArray();
+        var hasDuplicateBasenames = containers.Length > 1 &&
+            FModelV3ContainerIdentity.HasDuplicateBasenames(containers.Select(item => item.ContainerPath));
+        var canExportToSource = containers.Length > 0 &&
+            containers.All(static item => item.CanExportToSourceDirectory);
+
         var outputMenuItem = menu.FindName("ExportContainerAssetsToOutputMenuItem") as MenuItem;
         if (outputMenuItem is not null)
-            outputMenuItem.Visibility = containers.Length > 1 && FModelV3ContainerIdentity.HasDuplicateBasenames(containers.Select(item => item.ContainerPath))
-                ? Visibility.Collapsed
-                : Visibility.Visible;
+            outputMenuItem.Visibility = hasDuplicateBasenames ? Visibility.Collapsed : Visibility.Visible;
+
+        var rawOutputMenuItem = menu.FindName("ExtractContainerRawToOutputMenuItem") as MenuItem;
+        if (rawOutputMenuItem is not null)
+            rawOutputMenuItem.Visibility = hasDuplicateBasenames ? Visibility.Collapsed : Visibility.Visible;
+
+        var sourceMenuItem = menu.FindName("ExportContainerAssetsToSourceMenuItem") as MenuItem;
+        if (sourceMenuItem is not null)
+            sourceMenuItem.Visibility = canExportToSource ? Visibility.Visible : Visibility.Collapsed;
+
+        var rawSourceMenuItem = menu.FindName("ExtractContainerRawToSourceMenuItem") as MenuItem;
+        if (rawSourceMenuItem is not null)
+            rawSourceMenuItem.Visibility = canExportToSource ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private static T FindAncestor<T>(DependencyObject current) where T : DependencyObject

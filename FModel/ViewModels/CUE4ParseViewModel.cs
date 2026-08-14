@@ -1656,6 +1656,12 @@ public class CUE4ParseViewModel : ViewModel
         CancellationToken cancellationToken = default)
         => FModelV3ContainerBatchExportRunner.RunAsync(this, request, cancellationToken);
 
+    internal Task<FModelV3ContainerRawBatchRunSummary> RunV3ContainerRawBatchAsync(
+        FModelV3ContainerExportRequest request,
+        string outputRoot,
+        CancellationToken cancellationToken = default)
+        => FModelV3ContainerRawExportRunner.RunAsync(this, request, outputRoot, cancellationToken);
+
     public void ShowMetadata(GameFile entry)
     {
         ApplicationService.ApplicationView.IsAssetsExplorerVisible = false;

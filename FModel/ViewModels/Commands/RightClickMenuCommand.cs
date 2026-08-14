@@ -43,7 +43,7 @@ public class RightClickMenuCommand : ViewModelCommand<ApplicationViewModel>
         if (param.Length == 0) return;
 
         var folders = param.OfType<TreeItem>().ToArray();
-        var containers = param.OfType<FileItem>().ToArray();
+        var containers = param.OfType<FileItem>().Where(static item => !item.IsLooseFilesContainer).ToArray();
         var assets = param
             .Select(static item => item switch
             {
@@ -56,28 +56,46 @@ public class RightClickMenuCommand : ViewModelCommand<ApplicationViewModel>
         if (folders.Length == 0 && containers.Length == 0 && assets.Length == 0)
             return;
 
-        if (trigger is "Export_Container_Output" or "Export_Container_Source")
+        if (trigger is "Export_Container_Output" or "Export_Container_Source" or
+            "Extract_Container_Raw_Output" or "Extract_Container_Raw_Source")
         {
             if (containers.Length == 0) return;
 
-            var destination = trigger == "Export_Container_Output"
+            var isRaw = trigger is "Extract_Container_Raw_Output" or "Extract_Container_Raw_Source";
+            var destination = trigger is "Export_Container_Output" or "Extract_Container_Raw_Output"
                 ? FModelV3ContainerExportDestination.Output
                 : FModelV3ContainerExportDestination.SourceDirectory;
             if (destination == FModelV3ContainerExportDestination.Output &&
                 FModelV3ContainerIdentity.HasDuplicateBasenames(containers.Select(static item => item.ContainerPath)))
                 return;
+            if (destination == FModelV3ContainerExportDestination.SourceDirectory &&
+                containers.Any(static item => !item.CanExportToSourceDirectory))
+            {
+                FModelV3ExportFeedback.ReportContainerRouteUnavailable(
+                    "Source-directory export is unavailable for virtual or streamed containers. Use the Output destination instead.");
+                return;
+            }
 
             var selection = FModelV3ContainerExportRequest.Create(
                 containers.Select(static item => item.ContainerPath),
                 destination,
                 UserSettings.Default.GameDirectory);
-            var runRequest = FModelV3ContainerBatchRunRequest.Create(
-                selection,
-                UserSettings.Default.OutputDirectory,
-                UserSettings.GetExportOptions());
 
             await _threadWorkerView.Begin(cancellationToken =>
             {
+                if (isRaw)
+                {
+                    contextViewModel.CUE4Parse.RunV3ContainerRawBatchAsync(
+                        selection,
+                        UserSettings.Default.OutputDirectory,
+                        cancellationToken).GetAwaiter().GetResult();
+                    return;
+                }
+
+                var runRequest = FModelV3ContainerBatchRunRequest.Create(
+                    selection,
+                    UserSettings.Default.OutputDirectory,
+                    UserSettings.GetExportOptions());
                 contextViewModel.CUE4Parse.RunV3ContainerBatchAsync(runRequest, cancellationToken).GetAwaiter().GetResult();
             });
             return;

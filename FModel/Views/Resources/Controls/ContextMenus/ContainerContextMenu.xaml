@@ -22,11 +22,46 @@
                 </Viewbox>
             </MenuItem.Icon>
         </MenuItem>
-        <MenuItem Header="Export Container Assets to Source Directory"
+        <MenuItem x:Name="ExportContainerAssetsToSourceMenuItem" Header="Export Container Assets to Source Directory"
                   Command="{Binding RightClickMenuCommand}">
             <MenuItem.CommandParameter>
                 <MultiBinding Converter="{x:Static converters:MultiParameterConverter.Instance}">
                     <Binding Source="Export_Container_Source" />
+                    <Binding Path="Tag" RelativeSource="{RelativeSource AncestorType=ContextMenu}" />
+                </MultiBinding>
+            </MenuItem.CommandParameter>
+            <MenuItem.Icon>
+                <Viewbox Width="16" Height="16">
+                    <Canvas Width="24" Height="24">
+                        <Path Fill="{DynamicResource {x:Static adonisUi:Brushes.ForegroundBrush}}" Data="{StaticResource FolderIcon}" />
+                    </Canvas>
+                </Viewbox>
+            </MenuItem.Icon>
+        </MenuItem>
+        <Separator />
+        <MenuItem x:Name="ExtractContainerRawToOutputMenuItem"
+                  Header="Extract All Container Files to Output"
+                  Command="{Binding RightClickMenuCommand}">
+            <MenuItem.CommandParameter>
+                <MultiBinding Converter="{x:Static converters:MultiParameterConverter.Instance}">
+                    <Binding Source="Extract_Container_Raw_Output" />
+                    <Binding Path="Tag" RelativeSource="{RelativeSource AncestorType=ContextMenu}" />
+                </MultiBinding>
+            </MenuItem.CommandParameter>
+            <MenuItem.Icon>
+                <Viewbox Width="16" Height="16">
+                    <Canvas Width="24" Height="24">
+                        <Path Fill="{DynamicResource {x:Static adonisUi:Brushes.ForegroundBrush}}" Data="{StaticResource ExportIcon}" />
+                    </Canvas>
+                </Viewbox>
+            </MenuItem.Icon>
+        </MenuItem>
+        <MenuItem x:Name="ExtractContainerRawToSourceMenuItem"
+                  Header="Extract All Container Files to Source Directory"
+                  Command="{Binding RightClickMenuCommand}">
+            <MenuItem.CommandParameter>
+                <MultiBinding Converter="{x:Static converters:MultiParameterConverter.Instance}">
+                    <Binding Source="Extract_Container_Raw_Source" />
                     <Binding Path="Tag" RelativeSource="{RelativeSource AncestorType=ContextMenu}" />
                 </MultiBinding>
             </MenuItem.CommandParameter>

@@ -206,9 +206,19 @@ internal static class FModelV3ContainerBatchExportRunner
         FModelV3ContainerPlanEntry entry,
         IAesVfsReader reader)
     {
-        var root = request.Selection.Destination == FModelV3ContainerExportDestination.Output
-            ? Path.Combine(request.OutputRoot, "Exports")
-            : Path.GetDirectoryName(FModelV3ContainerIdentity.NormalizeContainerPath(reader.Path)) ?? request.OutputRoot;
+        string root;
+        if (request.Selection.Destination == FModelV3ContainerExportDestination.Output)
+        {
+            root = Path.Combine(request.OutputRoot, "Exports");
+        }
+        else
+        {
+            if (!FModelV3ContainerFormats.CanExportToSourceDirectory(reader))
+                throw new InvalidOperationException(
+                    $"Source-directory export is unavailable for virtual or streamed container '{entry.ContainerName}'. Use the Output destination instead.");
+
+            root = Path.GetDirectoryName(FModelV3ContainerIdentity.NormalizeContainerPath(reader.Path)) ?? request.OutputRoot;
+        }
 
         return FModelV3ContainerIdentity.CombineContainedDirectory(root, entry.ContainerDirectoryName);
     }
