@@ -91,7 +91,11 @@ public partial class MainWindow
     {
         var newOrUpdated = UserSettings.Default.ShowChangelog;
 #if !DEBUG
-        if (!FModelV3NewPipelineStartupOptions.IsOneShot) ApplicationService.ApiEndpointView.FModelApi.CheckForUpdates(true);
+        if (FModelUpdatePolicy.AutomaticStartupUpdateChecksEnabled &&
+            !FModelV3NewPipelineStartupOptions.IsOneShot)
+        {
+            ApplicationService.ApiEndpointView.FModelApi.CheckForUpdates(true);
+        }
 #endif
 
         switch (UserSettings.Default.AesReload)
