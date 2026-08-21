@@ -5,6 +5,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Pipeline;
 using CUE4Parse.UE4.Assets.Exports;
+using CUE4Parse.UE4.Assets.Exports.GeometryCollection;
 using CUE4Parse.UE4.Assets.Exports.SkeletalMesh;
 using CUE4Parse.UE4.Assets.Exports.StaticMesh;
 using CUE4Parse_Conversion;
@@ -24,7 +25,7 @@ internal static class FModelV3ExporterFactory
 
     public static bool IsEnabled => true;
 
-    internal static bool IsSupported(UObject export) => export is UStaticMesh or USkeletalMesh;
+    internal static bool IsSupported(UObject export) => export is UStaticMesh or USkeletalMesh or UGeometryCollection;
 
     internal static FModelUeFormatPolicy CreatePolicySnapshot()
     {

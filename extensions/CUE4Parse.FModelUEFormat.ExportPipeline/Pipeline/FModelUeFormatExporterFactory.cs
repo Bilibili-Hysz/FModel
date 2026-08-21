@@ -13,7 +13,7 @@ public interface IFModelUeFormatExporterFactory
     FModelUeFormatFactoryDecision Decide(FModelUeFormatFactoryContext context);
 }
 
-/// <summary>Default-off policy decision for enabled top-level Static and Skeletal Mesh UEFormat requests.</summary>
+/// <summary>Default-off policy decision for enabled top-level static, skeletal, and geometry-collection UEFormat requests.</summary>
 public sealed class FModelUeFormatExporterFactory(FModelUeFormatPolicy policy) : IFModelUeFormatExporterFactory
 {
     public FModelUeFormatPolicy Policy { get; } = policy ?? throw new ArgumentNullException(nameof(policy));
@@ -25,7 +25,8 @@ public sealed class FModelUeFormatExporterFactory(FModelUeFormatPolicy policy) :
             return FModelUeFormatFactoryDecision.Disabled(context.ExportType);
 
         var isOwnedMeshType = string.Equals(context.ExportType, "UStaticMesh", StringComparison.Ordinal)
-                              || string.Equals(context.ExportType, "USkeletalMesh", StringComparison.Ordinal);
+                              || string.Equals(context.ExportType, "USkeletalMesh", StringComparison.Ordinal)
+                              || string.Equals(context.ExportType, "UGeometryCollection", StringComparison.Ordinal);
         if (!isOwnedMeshType)
             return FModelUeFormatFactoryDecision.NotHandled("v3.exporter.unsupported-type", context.ExportType, Policy);
         if (!string.Equals(context.RequestedFormat, "UEFormat", StringComparison.OrdinalIgnoreCase))
