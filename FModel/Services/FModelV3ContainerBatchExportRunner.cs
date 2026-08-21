@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using CUE4Parse.FileProvider.Vfs;
@@ -97,42 +98,68 @@ internal static class FModelV3ContainerBatchExportRunner
                     session = new ExportSession { Extension = FModelV3ExportSessionExtension.Current };
                     using (FModelV3ContainerExportScope.Push(session, batchLease.Policy))
                     {
-                        foreach (var packagePath in entry.PackagePaths)
+                        // Keep the consumer alive while package discovery streams
+                        // roots into the session. This avoids retaining every loaded
+                        // UObject/package until the complete container has first been
+                        // enumerated. ExportSession distinguishes these producer roots
+                        // from dependencies discovered by active exporters.
+                        using var producer = session.OpenProducer();
+                        var runTask = ExportSessionViewModel.RunExplicitAsync(
+                            session,
+                            destinationDirectory,
+                            request.ExportOptions,
+                            cancellationToken: cancellationToken);
+                        ExceptionDispatchInfo? productionFailure = null;
+                        try
                         {
-                            cancellationToken.ThrowIfCancellationRequested();
-                            if (!packageLookup[entry.ContainerPath].TryGetValue(packagePath, out var package))
+                            foreach (var packagePath in entry.PackagePaths)
                             {
-                                var missing = new InvalidOperationException($"Owned package disappeared before export: {packagePath}");
-                                packageFailures.Add(new(packagePath, missing.Message));
-                                FModelV3ExportFeedback.ReportContainerPackageFailure(entry.ContainerName, packagePath, missing);
-                                continue;
-                            }
+                                cancellationToken.ThrowIfCancellationRequested();
+                                if (!packageLookup[entry.ContainerPath].TryGetValue(packagePath, out var package))
+                                {
+                                    var missing = new InvalidOperationException($"Owned package disappeared before export: {packagePath}");
+                                    packageFailures.Add(new(packagePath, missing.Message));
+                                    FModelV3ExportFeedback.ReportContainerPackageFailure(entry.ContainerName, packagePath, missing);
+                                    continue;
+                                }
 
-                            try
-                            {
-                                host.Extract(cancellationToken, package, false, PropertiesPass);
-                                host.Extract(cancellationToken, package, false, AssetPass);
-                            }
-                            catch (OperationCanceledException)
-                            {
-                                throw;
-                            }
-                            catch (Exception error)
-                            {
-                                packageFailures.Add(new(packagePath, error.Message));
-                                Log.Error(error, "v3.container.batch package failed {ContainerPath} {PackagePath}", entry.ContainerPath, packagePath);
-                                FModelV3ExportFeedback.ReportContainerPackageFailure(entry.ContainerName, packagePath, error);
+                                try
+                                {
+                                    host.Extract(cancellationToken, package, false, PropertiesPass);
+                                    host.Extract(cancellationToken, package, false, AssetPass);
+                                }
+                                catch (OperationCanceledException)
+                                {
+                                    throw;
+                                }
+                                catch (Exception error)
+                                {
+                                    packageFailures.Add(new(packagePath, error.Message));
+                                    Log.Error(error, "v3.container.batch package failed {ContainerPath} {PackagePath}", entry.ContainerPath, packagePath);
+                                    FModelV3ExportFeedback.ReportContainerPackageFailure(entry.ContainerName, packagePath, error);
+                                }
                             }
                         }
-
-                        if (session.HasQueuedItems)
+                        catch (Exception error)
                         {
-                            results = (await ExportSessionViewModel.RunExplicitAsync(
-                                session,
-                                destinationDirectory,
-                                request.ExportOptions,
-                                cancellationToken: cancellationToken)).ToArray();
+                            productionFailure = ExceptionDispatchInfo.Capture(error);
                         }
+                        finally
+                        {
+                            producer.Dispose();
+                        }
+
+                        try
+                        {
+                            results = (await runTask.ConfigureAwait(false)).ToArray();
+                        }
+                        catch when (productionFailure is not null)
+                        {
+                            productionFailure.Throw();
+                            throw;
+                        }
+
+                        productionFailure?.Throw();
                     }
 
                     FModelV3ExportFeedback.Report(results, destinationDirectory, effectiveV3Enabled, session.OperationId);
@@ -145,8 +172,7 @@ internal static class FModelV3ContainerBatchExportRunner
                         packageFailures.Count,
                         results.Length,
                         failedResultCount,
-                        packageFailures,
-                        results);
+                        packageFailures);
                     summaries.Add(summary);
                     FModelV3ExportFeedback.ReportContainerCompleted(
                         entry.ContainerName,
@@ -163,7 +189,8 @@ internal static class FModelV3ContainerBatchExportRunner
                 }
                 catch (Exception error)
                 {
-                    FModelV3ExporterFactory.ClearPending();
+                    if (session is not null)
+                        FModelV3ExporterFactory.ClearPending(session.OperationId);
                     Log.Error(error, "v3.container.batch container failed {ContainerPath}", entry.ContainerPath);
                     FModelV3ExportFeedback.ReportContainerFailed(entry.ContainerName, destinationDirectory, error);
                     summaries.Add(new FModelV3ContainerRunSummary(
@@ -175,20 +202,38 @@ internal static class FModelV3ContainerBatchExportRunner
                         results.Length,
                         results.Count(static result => !result.Success),
                         packageFailures,
-                        results,
                         error.Message));
                 }
                 finally
                 {
-                    if (session?.IsRunning != true)
-                        session?.Clear();
-                    FModelV3ExporterFactory.ClearPending();
+                    try
+                    {
+                        if (session?.IsRunning != true)
+                        {
+                            try
+                            {
+                                session?.Clear();
+                            }
+                            finally
+                            {
+                                session?.Dispose();
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        // This registry contains only the V3-owned object-path
+                        // markers. It must be cleared even if host cleanup reports
+                        // an exception, otherwise a later batch can retain stale
+                        // ownership state indefinitely.
+                        if (session is not null)
+                            FModelV3ExporterFactory.ClearPending(session.OperationId);
+                    }
                 }
             }
         }
         catch (OperationCanceledException)
         {
-            FModelV3ExportFeedback.ReportCanceled();
             throw;
         }
 

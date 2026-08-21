@@ -4,7 +4,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using CUE4Parse_Conversion;
 using CUE4Parse_Conversion.Options;
 
 namespace FModel.Framework;
@@ -46,7 +45,6 @@ internal sealed record FModelV3ContainerRunSummary(
     int ResultCount,
     int FailedResultCount,
     IReadOnlyList<FModelV3ContainerPackageFailure> PackageFailures,
-    IReadOnlyList<ExportResult> Results,
     string? Error = null)
 {
     public bool Succeeded => Error is null && FailedPackageCount == 0 && FailedResultCount == 0;

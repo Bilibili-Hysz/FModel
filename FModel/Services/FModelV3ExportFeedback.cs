@@ -3,7 +3,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using CUE4Parse_Conversion;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Pipeline;
 using FModel.Framework;
@@ -167,25 +166,61 @@ internal static class FModelV3ExportFeedback
     {
         ArgumentNullException.ThrowIfNull(results);
         ArgumentException.ThrowIfNullOrWhiteSpace(operationId);
-        var ownedResults = FModelV3ExporterFactory.TakeOwnedResults(results);
-        if (ownedResults.Count == 0 || !isUeFormatSession)
+        if (!isUeFormatSession)
+        {
+            FModelV3ExporterFactory.ClearPending(operationId);
+            return;
+        }
+
+        // Consume ownership markers in one pass. The previous implementation built
+        // an owned-result list, an owned-path HashSet and multiple arrays over the
+        // complete result set. For a large container batch those transient
+        // projections doubled the lifetime of every result/path string just while
+        // printing the terminal summary.
+        var ownedCount = 0;
+        var failedOwnedCount = 0;
+        var otherFailedCount = 0;
+        var modelFile = default(string);
+        var diskFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var firstFailures = new List<(string ObjectPath, string Message)>(capacity: 5);
+        foreach (var result in results)
+        {
+            if (!FModelV3ExporterFactory.TryTakeOwnedResult(operationId, result.ObjectPath))
+            {
+                if (!result.Success) otherFailedCount++;
+                continue;
+            }
+
+            ownedCount++;
+            if (!result.Success)
+            {
+                failedOwnedCount++;
+                if (firstFailures.Count < 5)
+                {
+                    firstFailures.Add((result.ObjectPath, result.Error?.Message ?? "Export failed."));
+                }
+            }
+
+            foreach (var path in result.DiskFilePaths ?? Array.Empty<string>())
+            {
+                if (diskFiles.Add(path)
+                    && modelFile is null
+                    && string.Equals(Path.GetExtension(path), ".uemodel", StringComparison.OrdinalIgnoreCase))
+                {
+                    modelFile = path;
+                }
+            }
+        }
+
+        // A terminal report owns the complete operation. Drop any root markers
+        // that did not receive a result because a host/exporter failed unusually.
+        FModelV3ExporterFactory.ClearPending(operationId);
+
+        if (ownedCount == 0)
             return;
 
-        var ownedObjectPaths = ownedResults
-            .Select(static result => result.ObjectPath)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var failedOwnedResults = ownedResults.Where(static result => !result.Success).ToArray();
-        var otherFailedResults = results
-            .Where(result => !result.Success && !ownedObjectPaths.Contains(result.ObjectPath))
-            .ToArray();
-        var diskFiles = ownedResults
-            .SelectMany(static result => result.DiskFilePaths ?? Array.Empty<string>())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        var modelFile = diskFiles
-            .FirstOrDefault(static path => string.Equals(Path.GetExtension(path), ".uemodel", StringComparison.OrdinalIgnoreCase));
         var linkTarget = modelFile ?? (Directory.Exists(exportDirectory) ? exportDirectory : null);
-        var succeeded = failedOwnedResults.Length == 0;
+        var succeeded = failedOwnedCount == 0;
 
         if (FLogger.Logger is null)
             return;
@@ -193,8 +228,8 @@ internal static class FModelV3ExportFeedback
         FLogger.Append(succeeded ? ELog.Information : ELog.Error, () =>
         {
             var message = succeeded
-                ? $"Operation {operationId}: UEFormat V3 export completed: {ownedResults.Count} model(s), {diskFiles.Length} file(s) written"
-                : $"Operation {operationId}: UEFormat V3 export completed with errors: {ownedResults.Count - failedOwnedResults.Length}/{ownedResults.Count} model(s) succeeded";
+                ? $"Operation {operationId}: UEFormat V3 export completed: {ownedCount} model(s), {diskFiles.Count} file(s) written"
+                : $"Operation {operationId}: UEFormat V3 export completed with errors: {ownedCount - failedOwnedCount}/{ownedCount} model(s) succeeded";
             FLogger.Text(message, FModel.Constants.WHITE);
             if (!string.IsNullOrWhiteSpace(linkTarget))
             {
@@ -207,30 +242,28 @@ internal static class FModelV3ExportFeedback
             }
         });
 
-        foreach (var failure in failedOwnedResults.Take(5))
+        foreach (var failure in firstFailures)
         {
             FLogger.Append(ELog.Error, () =>
-                FLogger.Text($"{failure.ObjectPath}: {failure.Error?.Message ?? "Export failed."}", FModel.Constants.WHITE, true));
+                FLogger.Text($"{failure.ObjectPath}: {failure.Message}", FModel.Constants.WHITE, true));
         }
 
-        if (otherFailedResults.Length > 0)
+        if (otherFailedCount > 0)
         {
             FLogger.Append(ELog.Warning, () =>
                 FLogger.Text(
-                    $"Export Session also reported {otherFailedResults.Length} other/dependency error(s). Open Export Session for details.",
+                    $"Export Session also reported {otherFailedCount} other/dependency error(s). Open Export Session for details.",
                     FModel.Constants.WHITE,
                     true));
         }
     }
 
-    internal static void ReportCanceled(string operationId = "")
+    internal static void ReportCanceled(string operationId)
     {
-        if (!FModelV3ExporterFactory.ClearPending() || FLogger.Logger is null)
+        if (!FModelV3ExporterFactory.ClearPending(operationId) || FLogger.Logger is null)
             return;
 
         FLogger.Append(ELog.Warning, () =>
-            FLogger.Text(string.IsNullOrWhiteSpace(operationId)
-                ? "UEFormat V3 export canceled."
-                : $"Operation {operationId}: UEFormat V3 export canceled.", FModel.Constants.WHITE, true));
+            FLogger.Text($"Operation {operationId}: UEFormat V3 export canceled.", FModel.Constants.WHITE, true));
     }
 }

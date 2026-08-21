@@ -46,8 +46,11 @@ public sealed class ExportModal
 
     private bool _openPopup;
     private bool _modalOpen;
-    private bool _inProgress;
+    private volatile bool _inProgress;
+    private readonly object _stateLock = new();
+    private readonly object _logLock = new();
     private CancellationTokenSource? _cts;
+    private bool _logSubscribed;
     private IReadOnlyList<ExportResult>? _exportResults;
 
     private ExportProgress _currentProgress;
@@ -55,6 +58,13 @@ public sealed class ExportModal
     private readonly Stopwatch _stopwatch = new();
     private readonly ConcurrentQueue<LogEvent> _pendingLogs = new();
     private readonly List<ClassGroup> _classGroups = [];
+    private readonly Dictionary<string, ClassGroup> _classGroupLookup = new(StringComparer.Ordinal);
+    private readonly Dictionary<ClassGroup, Dictionary<string, ObjectGroup>> _objectGroupLookup = [];
+    private const int MaxPendingLogEvents = 4096;
+    private const int MaxRetainedLogEntries = 10000;
+    private int _pendingLogCount;
+    private int _retainedLogCount;
+    private int _droppedLogCount;
 
     private const int MaxGraphSamples = 4096;
     private const float GraphSampleIntervalSec = 0.25f;
@@ -64,26 +74,51 @@ public sealed class ExportModal
 
     private ExportModal()
     {
-        ImGuiSink.Instance.OnExporterLogEvent += _pendingLogs.Enqueue;
-        _progress = new Progress<ExportProgress>(p => _currentProgress = p);
+        // Progress<T> captures the current SynchronizationContext. The ImGui modal
+        // only needs the latest value, so a direct callback avoids posting one UI
+        // work item per exported asset when a WPF context happens to be current.
+        _progress = new DirectExportProgress(p =>
+        {
+            lock (_stateLock)
+                _currentProgress = p;
+        });
     }
 
     public void Export(IEnumerable<IExportableThing> nodes, string exportDirectory, ExportOptions options)
     {
-        Reset();
-        _openPopup = true;
-        _inProgress = true;
-        _cts = new CancellationTokenSource();
-        _stopwatch.Restart();
+        ArgumentNullException.ThrowIfNull(nodes);
+        ArgumentNullException.ThrowIfNull(options);
 
-        var token = _cts.Token;
+        lock (_stateLock)
+        {
+            if (_inProgress)
+                return;
+        }
+
+        ResetDisplayState();
+        _openPopup = true;
+        var cts = new CancellationTokenSource();
+        lock (_stateLock)
+        {
+            _inProgress = true;
+            _cts = cts;
+        }
+        SubscribeLogs();
+        lock (_stateLock)
+            _stopwatch.Restart();
+
+        var token = cts.Token;
         _ = Task.Run(async () =>
         {
+            ExportSession? session = null;
             try
             {
-                var session = new ExportSession { Extension = FModel.Services.FModelV3ExportSessionExtension.Current };
+                using var ownedSession = new ExportSession { Extension = FModel.Services.FModelV3ExportSessionExtension.Current };
+                session = ownedSession;
                 foreach (var node in nodes) node.AddToExportSession(session);
-                _exportResults = await session.RunAsync(exportDirectory, options, _progress, token);
+                var results = await session.RunAsync(exportDirectory, options, _progress, token);
+                lock (_stateLock)
+                    _exportResults = results;
             }
             catch (OperationCanceledException)
             {
@@ -95,10 +130,23 @@ public sealed class ExportModal
             }
             finally
             {
-                _stopwatch.Stop();
-                _inProgress = false;
+                // The ImGui modal owns a transient ExportSession but does not use
+                // the WPF ExportSessionViewModel feedback path. Clear the static
+                // V3 ownership markers here as well, otherwise a completed modal
+                // export would retain every tracked ObjectPath until process exit.
+                if (session is not null)
+                    FModel.ViewModels.FModelV3ExporterFactory.ClearPending(session.OperationId);
+                UnsubscribeLogs();
+                lock (_stateLock)
+                {
+                    _stopwatch.Stop();
+                    if (ReferenceEquals(_cts, cts))
+                        _cts = null;
+                    cts.Dispose();
+                    _inProgress = false;
+                }
             }
-        }, token);
+        }, CancellationToken.None);
     }
 
     public void Draw()
@@ -138,38 +186,92 @@ public sealed class ExportModal
         if (!open)
         {
             _modalOpen = false;
-            Reset();
+            CancelExport();
+            UnsubscribeLogs();
+            ResetDisplayState();
         }
     }
 
-    private void Reset()
+    private void SubscribeLogs()
     {
-        _pendingLogs.Clear();
+        lock (_stateLock)
+        {
+            if (_logSubscribed) return;
+            ImGuiSink.Instance.OnExporterLogEvent += OnExporterLogEvent;
+            _logSubscribed = true;
+        }
+    }
+
+    private void UnsubscribeLogs()
+    {
+        lock (_stateLock)
+        {
+            if (!_logSubscribed) return;
+            ImGuiSink.Instance.OnExporterLogEvent -= OnExporterLogEvent;
+            _logSubscribed = false;
+        }
+    }
+
+    private void OnExporterLogEvent(LogEvent log)
+    {
+        if (!_inProgress) return;
+
+        lock (_logLock)
+        {
+            _pendingLogs.Enqueue(log);
+            _pendingLogCount++;
+            while (_pendingLogCount > MaxPendingLogEvents && _pendingLogs.TryDequeue(out _))
+            {
+                _pendingLogCount--;
+            }
+        }
+    }
+
+    private void ResetDisplayState()
+    {
+        lock (_logLock)
+        {
+            _pendingLogs.Clear();
+            _pendingLogCount = 0;
+        }
+
         _classGroups.Clear();
-        _exportResults = null;
-        _currentProgress = new ExportProgress(0, 0);
-        _cts?.Cancel();
-        _cts?.Dispose();
-        _cts = null;
+        _classGroupLookup.Clear();
+        _objectGroupLookup.Clear();
+        lock (_stateLock)
+        {
+            _exportResults = null;
+            _currentProgress = new ExportProgress(0, 0);
+        }
+        _retainedLogCount = 0;
+        _droppedLogCount = 0;
 
         _graphSamples.Clear();
         _graphNextSampleAt = 0f;
         _graphLastCompleted = 0;
     }
 
+    private void CancelExport()
+    {
+        lock (_stateLock)
+        {
+            _cts?.Cancel();
+        }
+    }
+
     private void DrawProgressBar()
     {
-        var e = _stopwatch.Elapsed;
+        var (inProgress, progress, results, e) = GetStateSnapshot();
         ImGui.TextDisabled("\uf2f2");
         ImGui.SameLine();
         ImGui.TextUnformatted($"{e.Minutes:D2}:{e.Seconds:D2}.{e.Milliseconds / 10:D2}");
 
-        if (_inProgress && _currentProgress is { Total: > 0, Completed: > 1 })
+        if (inProgress && progress is { Total: > 0, Completed: > 1 })
         {
-            var rate = _currentProgress.Completed / e.TotalSeconds;
+            var rate = progress.Completed / e.TotalSeconds;
             if (rate > 0)
             {
-                var remaining = (_currentProgress.Total - _currentProgress.Completed) / rate;
+                var remaining = (progress.Total - progress.Completed) / rate;
                 var eta = TimeSpan.FromSeconds(remaining);
                 ImGui.SameLine();
                 ImGui.TextDisabled("\uf017");
@@ -177,28 +279,28 @@ public sealed class ExportModal
                 ImGui.TextUnformatted($"ETA {eta.Minutes:D2}:{eta.Seconds:D2}");
             }
         }
-        else if (!_inProgress && _exportResults is { Count: > 0 })
+        else if (!inProgress && results is { Count: > 0 })
         {
             ImGui.SameLine();
             ImGui.TextColored(_greenColor, "\uf058");
             ImGui.SameLine();
-            ImGui.TextUnformatted($"{_exportResults?.Count(r => r.Success) ?? 0} succeeded");
+            ImGui.TextUnformatted($"{results.Count(r => r.Success)} succeeded");
 
             ImGui.SameLine();
             ImGui.TextColored(_redColor, IconXMark);
             ImGui.SameLine();
-            ImGui.TextUnformatted($"{_exportResults?.Count(r => !r.Success) ?? 0} failed");
+            ImGui.TextUnformatted($"{results.Count(r => !r.Success)} failed");
         }
 
         ImGui.Spacing();
 
-        var barColor = _classGroups.Any(cg => cg.ErrorCount > 0) ? new Vector4(0.75f, 0.32f, 0.32f, 1f) : _inProgress ? new Vector4(0.22f, 0.52f, 0.90f, 1f) : new Vector4(0.28f, 0.78f, 0.44f, 1f);
-        var label = _inProgress && _currentProgress.Total > 0 ? _currentProgress.DisplayText : _inProgress ? "Preparing..." : "Done";
+        var barColor = _classGroups.Any(cg => cg.ErrorCount > 0) ? new Vector4(0.75f, 0.32f, 0.32f, 1f) : inProgress ? new Vector4(0.22f, 0.52f, 0.90f, 1f) : new Vector4(0.28f, 0.78f, 0.44f, 1f);
+        var label = inProgress && progress.Total > 0 ? progress.DisplayText : inProgress ? "Preparing..." : "Done";
 
         var barPos = ImGui.GetCursorScreenPos();
         var barSize = new Vector2(ImGui.GetContentRegionAvail().X, ImGui.GetFrameHeight());
         var hovered = ImGui.IsMouseHoveringRect(barPos, barPos + barSize);
-        if (hovered && _inProgress)
+        if (hovered && inProgress)
         {
             barColor = new Vector4(0.75f, 0.32f, 0.32f, 1f);
             label = "\uf05e  Cancel";
@@ -207,26 +309,27 @@ public sealed class ExportModal
         ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 4f);
         ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1f);
         ImGui.PushStyleColor(ImGuiCol.PlotHistogram, barColor);
-        ImGui.ProgressBar(_currentProgress.Percentage, barSize, label);
+        ImGui.ProgressBar(progress.Percentage, barSize, label);
         ImGui.PopStyleColor();
         ImGui.PopStyleVar(2);
 
-        if (_inProgress)
+        if (inProgress)
         {
             ImGui.SetCursorScreenPos(barPos);
             if (ImGui.InvisibleButton("##BarAction", barSize))
             {
-                _cts?.Cancel();
+                CancelExport();
             }
         }
     }
 
     private void DrawThroughputGraph()
     {
-        var elapsedSec = (float)_stopwatch.Elapsed.TotalSeconds;
-        if (_inProgress && _currentProgress.Completed > 0 && elapsedSec >= _graphNextSampleAt && _graphSamples.Count < MaxGraphSamples)
+        var (inProgress, progress, _, elapsed) = GetStateSnapshot();
+        var elapsedSec = (float)elapsed.TotalSeconds;
+        if (inProgress && progress.Completed > 0 && elapsedSec >= _graphNextSampleAt && _graphSamples.Count < MaxGraphSamples)
         {
-            var completed = _currentProgress.Completed;
+            var completed = progress.Completed;
             var rate = (completed - _graphLastCompleted) / GraphSampleIntervalSec;
             _graphSamples.Add(MathF.Max(rate, 0f));
             _graphLastCompleted = completed;
@@ -331,6 +434,11 @@ public sealed class ExportModal
         var treeW = avail.X - canvasSize - ImGui.GetStyle().ItemSpacing.X;
 
         DrainPendingLogs();
+
+        if (_droppedLogCount > 0)
+        {
+            ImGui.TextDisabled($"{_droppedLogCount} log entries omitted to keep memory bounded.");
+        }
 
         if (ImGui.BeginChild("##ExportLogTree", avail with { X = treeW }, ImGuiChildFlags.FrameStyle))
         {
@@ -566,10 +674,35 @@ public sealed class ExportModal
         }
     }
 
+    private sealed class DirectExportProgress(Action<ExportProgress> callback) : IProgress<ExportProgress>
+    {
+        public void Report(ExportProgress value) => callback(value);
+    }
+
+    private (bool InProgress, ExportProgress Progress, IReadOnlyList<ExportResult>? Results, TimeSpan Elapsed) GetStateSnapshot()
+    {
+        lock (_stateLock)
+            return (_inProgress, _currentProgress, _exportResults, _stopwatch.Elapsed);
+    }
+
     private void DrainPendingLogs()
     {
-        while (_pendingLogs.TryDequeue(out var log))
+        while (true)
         {
+            LogEvent log;
+            lock (_logLock)
+            {
+                if (!_pendingLogs.TryDequeue(out log!))
+                    break;
+                _pendingLogCount--;
+            }
+
+            if (_retainedLogCount >= MaxRetainedLogEntries)
+            {
+                _droppedLogCount++;
+                continue;
+            }
+
             var className = log.GetContext("ClassName");
             var objectPath = log.GetContext("ObjectPath");
             var filePath = log.GetContext("FilePath");
@@ -583,26 +716,35 @@ public sealed class ExportModal
                 cg.ErrorCount++;
             }
             og.Entries.Add(entry);
+            _retainedLogCount++;
         }
     }
 
     private ClassGroup FindOrCreateClass(string name)
     {
-        foreach (var cg in _classGroups)
-            if (cg.Name == name) return cg;
+        if (_classGroupLookup.TryGetValue(name, out var existing))
+            return existing;
 
         var n = new ClassGroup(name);
         _classGroups.Add(n);
+        _classGroupLookup.Add(name, n);
         return n;
     }
 
-    private static ObjectGroup FindOrCreateObject(ClassGroup cg, string path)
+    private ObjectGroup FindOrCreateObject(ClassGroup cg, string path)
     {
-        foreach (var og in cg.Objects)
-            if (og.Path == path) return og;
+        if (!_objectGroupLookup.TryGetValue(cg, out var objects))
+        {
+            objects = new Dictionary<string, ObjectGroup>(StringComparer.Ordinal);
+            _objectGroupLookup.Add(cg, objects);
+        }
+
+        if (objects.TryGetValue(path, out var existing))
+            return existing;
 
         var n = new ObjectGroup(path);
         cg.Objects.Add(n);
+        objects.Add(path, n);
         return n;
     }
 

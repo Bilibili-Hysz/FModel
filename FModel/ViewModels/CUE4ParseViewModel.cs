@@ -1811,7 +1811,7 @@ public class CUE4ParseViewModel : ViewModel
             }
             var targetSession = FModelV3ContainerExportScope.CurrentSession ?? ExportSessionViewModel.Instance.Session;
             targetSession.Add(export);
-            if (FModelV3ExporterFactory.TrackQueued(export))
+            if (FModelV3ExporterFactory.TrackQueued(export, targetSession.OperationId))
                 Log.Information("v3.newpipeline.registration tracked UEFormat-capable official root type {ExportType}", export.GetType().FullName);
             else
                 Log.Information("v3.newpipeline.registration official route type {ExportType}", export.GetType().FullName);

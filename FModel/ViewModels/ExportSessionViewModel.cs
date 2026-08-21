@@ -146,9 +146,25 @@ public class ExportSessionViewModel : ViewModel
 
     public ObservableCollection<ClassGroupViewModel> ClassGroups { get; } = [];
 
+    private readonly object _ctsLock = new();
+    private readonly object _logLock = new();
+    private readonly object _progressLock = new();
     private CancellationTokenSource? _cts;
     private readonly Stopwatch _stopwatch = new();
     private readonly ConcurrentQueue<LogEvent> _pendingLogs = new();
+    private readonly Dictionary<string, ClassGroupViewModel> _classGroupLookup = new(StringComparer.Ordinal);
+    private readonly Dictionary<ClassGroupViewModel, Dictionary<string, ObjectGroupViewModel>> _objectGroupLookup = [];
+    private const int MaxPendingLogEvents = 4096;
+    private const int MaxRetainedLogEntries = 10000;
+    private int _pendingLogCount;
+    private int _logDrainScheduled;
+    private int _retainedLogCount;
+    private int _droppedLogCount;
+    private ExportProgress _latestProgress;
+    private int _progressSucceededCount;
+    private int _progressFailedCount;
+    private long _progressGeneration;
+    private int _progressDrainScheduled;
     private DispatcherTimer? _uiTimer;
 
     private ExportSessionViewModel()
@@ -158,32 +174,95 @@ public class ExportSessionViewModel : ViewModel
 
     private void OnLogEvent(LogEvent log)
     {
-        _pendingLogs.Enqueue(log);
-        Application.Current?.Dispatcher.InvokeAsync(DrainLogs);
+        lock (_logLock)
+        {
+            _pendingLogs.Enqueue(log);
+            _pendingLogCount++;
+            while (_pendingLogCount > MaxPendingLogEvents && _pendingLogs.TryDequeue(out _))
+            {
+                _pendingLogCount--;
+            }
+        }
+
+        ScheduleLogDrain();
+    }
+
+    private void ScheduleLogDrain()
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher == null || Interlocked.Exchange(ref _logDrainScheduled, 1) != 0)
+            return;
+
+        try
+        {
+            dispatcher.InvokeAsync(() =>
+            {
+                try
+                {
+                    DrainLogs();
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _logDrainScheduled, 0);
+                    if (Volatile.Read(ref _pendingLogCount) > 0)
+                        ScheduleLogDrain();
+                }
+            });
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _logDrainScheduled, 0);
+        }
     }
 
     private int _previousCount;
+    private int _sessionUpdateScheduled;
     private void OnSessionPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName != nameof(ExportSession.TotalQueued)) return;
 
-        var count = _session?.TotalQueued ?? 0;
-        Application.Current?.Dispatcher.InvokeAsync(() =>
-        {
-            if (count > 0 && _previousCount == 0)
-            {
-                ClearExportHistory();
-            }
+        ScheduleSessionUiUpdate();
+    }
 
-            ShowQueueToast = count switch
+    private void ScheduleSessionUiUpdate()
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher == null || Interlocked.Exchange(ref _sessionUpdateScheduled, 1) != 0)
+            return;
+
+        try
+        {
+            dispatcher.InvokeAsync(() =>
             {
-                > 0 when _previousCount == 0 => true,
-                0 => false,
-                _ => ShowQueueToast
-            };
-            _previousCount = count;
-            RaisePropertyChanged(nameof(CanExport));
-        });
+                try
+                {
+                    var count = _session?.TotalQueued ?? 0;
+                    if (count > 0 && _previousCount == 0)
+                    {
+                        ClearExportHistory();
+                    }
+
+                    ShowQueueToast = count switch
+                    {
+                        > 0 when _previousCount == 0 => true,
+                        0 => false,
+                        _ => ShowQueueToast
+                    };
+                    _previousCount = count;
+                    RaisePropertyChanged(nameof(CanExport));
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _sessionUpdateScheduled, 0);
+                    if ((_session?.TotalQueued ?? 0) != _previousCount)
+                        ScheduleSessionUiUpdate();
+                }
+            });
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _sessionUpdateScheduled, 0);
+        }
     }
 
     public async Task<IReadOnlyList<ExportResult>> ExportAsync()
@@ -198,8 +277,14 @@ public class ExportSessionViewModel : ViewModel
         SucceededCount = 0;
         FailedCount = 0;
         _stopwatch.Restart();
+        var progressGeneration = BeginProgressGeneration();
 
-        _cts = new CancellationTokenSource();
+        CancellationTokenSource cts;
+        lock (_ctsLock)
+        {
+            cts = new CancellationTokenSource();
+            _cts = cts;
+        }
         StartUiTimer();
 
         string exportDirectory;
@@ -215,29 +300,22 @@ public class ExportSessionViewModel : ViewModel
             exportOptions = UserSettings.GetExportOptions();
         }
 
-        var progress = new Progress<ExportProgress>(p =>
-        {
-            Application.Current?.Dispatcher.InvokeAsync(() =>
-            {
-                CompletedCount = p.Completed;
-                CurrentItemName = p.LastResult?.ObjectPath;
-                if (p.LastResult != null)
-                {
-                    if (p.LastResult.Success) SucceededCount++;
-                    else FailedCount++;
-                }
-                ProgressValue = p.Total > 0 ? (double)p.Completed / p.Total : 0;
-            });
-        });
+        // Do not use Progress<T> here: when constructed on the WPF thread it posts
+        // one Dispatcher work item per asset. A large export would therefore queue
+        // thousands of progress callbacks and retain their ExportResult payloads.
+        // DirectExportProgress records only the latest snapshot and coalesces the UI
+        // drain to one dispatcher item at a time.
+        var progress = new DirectExportProgress(p => QueueProgress(p, progressGeneration));
 
         IReadOnlyList<ExportResult> results = null;
         try
         {
-            results = await Session.RunAsync(exportDirectory, exportOptions, progress, _cts.Token).ConfigureAwait(false);
+            results = await Session.RunAsync(exportDirectory, exportOptions, progress, cts.Token).ConfigureAwait(false);
             if (exportOptions.MeshFormat == EMeshFormat.UEFormat)
             {
                 Application.Current?.Dispatcher.InvokeAsync(() =>
                 {
+                    if (!IsCurrentProgressGeneration(progressGeneration)) return;
                     CompletedCount = results.Count;
                     SucceededCount = results.Count(static result => result.Success);
                     FailedCount = results.Count - SucceededCount;
@@ -252,8 +330,22 @@ public class ExportSessionViewModel : ViewModel
             FModel.Services.FModelV3ExportFeedback.ReportCanceled(Session.OperationId);
             Application.Current?.Dispatcher.InvokeAsync(() => IsCanceled = true);
         }
+        catch
+        {
+            // Unexpected host/progress failures must not leave the static V3
+            // ownership registry retaining every queued ObjectPath.
+            FModelV3ExporterFactory.ClearPending(Session.OperationId);
+            throw;
+        }
         finally
         {
+            lock (_ctsLock)
+            {
+                if (ReferenceEquals(_cts, cts))
+                    _cts = null;
+                cts.Dispose();
+            }
+
             _stopwatch.Stop();
             Application.Current?.Dispatcher.InvokeAsync(() =>
             {
@@ -362,13 +454,18 @@ public class ExportSessionViewModel : ViewModel
 
     public void CancelExport()
     {
-        _cts?.Cancel();
+        lock (_ctsLock)
+        {
+            _cts?.Cancel();
+        }
     }
 
     public void ClearQueue()
     {
+        if (IsRunning) return;
         _session?.Clear();
-        FModelV3ExporterFactory.ClearPending();
+        if (_session is not null)
+            FModelV3ExporterFactory.ClearPending(_session.OperationId);
         ClearExportHistory();
     }
 
@@ -377,15 +474,19 @@ public class ExportSessionViewModel : ViewModel
         if (IsRunning || _session?.Remove(item.Path) != true)
             return;
 
-        FModelV3ExporterFactory.ForgetOwnedObjectPath(item.Path);
+        FModelV3ExporterFactory.ForgetOwnedObjectPath(Session.OperationId, item.Path);
         var group = ClassGroups.FirstOrDefault(x => x.Objects.Contains(item));
         if (group == null)
             return;
 
         group.Objects.Remove(item);
+        if (_objectGroupLookup.TryGetValue(group, out var objects))
+            objects.Remove(item.Path);
         if (group.Objects.Count == 0)
         {
             ClassGroups.Remove(group);
+            _classGroupLookup.Remove(group.Name);
+            _objectGroupLookup.Remove(group);
         }
     }
 
@@ -419,8 +520,109 @@ public class ExportSessionViewModel : ViewModel
         EtaTime = null;
     }
 
+    private long BeginProgressGeneration()
+    {
+        lock (_progressLock)
+        {
+            var generation = ++_progressGeneration;
+            _latestProgress = new ExportProgress(0, 0);
+            _progressSucceededCount = 0;
+            _progressFailedCount = 0;
+            return generation;
+        }
+    }
+
+    private bool IsCurrentProgressGeneration(long generation)
+    {
+        lock (_progressLock)
+        {
+            return generation == _progressGeneration;
+        }
+    }
+
+    private void QueueProgress(ExportProgress progress, long generation)
+    {
+        lock (_progressLock)
+        {
+            if (generation != _progressGeneration)
+                return;
+
+            _latestProgress = progress;
+            if (progress.LastResult is { Success: true })
+                _progressSucceededCount++;
+            else if (progress.LastResult is not null)
+                _progressFailedCount++;
+        }
+
+        ScheduleProgressDrain();
+    }
+
+    private void ScheduleProgressDrain()
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            DrainProgress();
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _progressDrainScheduled, 1) != 0)
+            return;
+
+        try
+        {
+            dispatcher.InvokeAsync(DrainProgress, DispatcherPriority.Background);
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _progressDrainScheduled, 0);
+        }
+    }
+
+    private void DrainProgress()
+    {
+        ExportProgress progress;
+        int succeeded;
+        int failed;
+
+        lock (_progressLock)
+        {
+            progress = _latestProgress;
+            succeeded = _progressSucceededCount;
+            failed = _progressFailedCount;
+        }
+
+        CompletedCount = progress.Completed;
+        SucceededCount = succeeded;
+        FailedCount = failed;
+        CurrentItemName = progress.LastResult?.ObjectPath;
+        ProgressValue = progress.Total > 0 ? (double)progress.Completed / progress.Total : 0;
+
+        Interlocked.Exchange(ref _progressDrainScheduled, 0);
+        var needsDrain = false;
+        lock (_progressLock)
+        {
+            if (_latestProgress != progress
+                || _progressSucceededCount != succeeded
+                || _progressFailedCount != failed)
+            {
+                needsDrain = true;
+            }
+        }
+        if (needsDrain)
+            ScheduleProgressDrain();
+    }
+
     private void ClearExportHistory()
     {
+        lock (_logLock)
+        {
+            _pendingLogs.Clear();
+            _pendingLogCount = 0;
+        }
+        Interlocked.Exchange(ref _retainedLogCount, 0);
+        Interlocked.Exchange(ref _droppedLogCount, 0);
+
         CompletedCount = 0;
         SucceededCount = 0;
         FailedCount = 0;
@@ -431,12 +633,33 @@ public class ExportSessionViewModel : ViewModel
         IsFinished = false;
         IsCanceled = false;
         ClassGroups.Clear();
+        _classGroupLookup.Clear();
+        _objectGroupLookup.Clear();
+    }
+
+    private sealed class DirectExportProgress(Action<ExportProgress> callback) : IProgress<ExportProgress>
+    {
+        public void Report(ExportProgress value) => callback(value);
     }
 
     private void DrainLogs()
     {
-        while (_pendingLogs.TryDequeue(out var log))
+        while (true)
         {
+            LogEvent log;
+            lock (_logLock)
+            {
+                if (!_pendingLogs.TryDequeue(out log!))
+                    break;
+                _pendingLogCount--;
+            }
+
+            if (Volatile.Read(ref _retainedLogCount) >= MaxRetainedLogEntries)
+            {
+                Interlocked.Increment(ref _droppedLogCount);
+                continue;
+            }
+
             var className = log.GetContext("ClassName");
             var objectPath = log.GetContext("ObjectPath");
             var filePath = log.GetContext("FilePath");
@@ -451,24 +674,35 @@ public class ExportSessionViewModel : ViewModel
             if (og.FirstFilePath == null && !string.IsNullOrEmpty(filePath))
                 og.FirstFilePath = filePath;
             og.Entries.Add(new LogEntryViewModel(log));
+            Interlocked.Increment(ref _retainedLogCount);
         }
     }
 
     private ClassGroupViewModel FindOrCreateClass(string name)
     {
-        var cg = ClassGroups.FirstOrDefault(c => c.Name == name);
-        if (cg != null) return cg;
-        cg = new ClassGroupViewModel(name);
+        if (_classGroupLookup.TryGetValue(name, out var existing))
+            return existing;
+
+        var cg = new ClassGroupViewModel(name);
         ClassGroups.Add(cg);
+        _classGroupLookup.Add(name, cg);
         return cg;
     }
 
-    private static ObjectGroupViewModel FindOrCreateObject(ClassGroupViewModel cg, string path)
+    private ObjectGroupViewModel FindOrCreateObject(ClassGroupViewModel cg, string path)
     {
-        var og = cg.Objects.FirstOrDefault(o => o.Path == path);
-        if (og != null) return og;
-        og = new ObjectGroupViewModel(path);
+        if (!_objectGroupLookup.TryGetValue(cg, out var objects))
+        {
+            objects = new Dictionary<string, ObjectGroupViewModel>(StringComparer.Ordinal);
+            _objectGroupLookup.Add(cg, objects);
+        }
+
+        if (objects.TryGetValue(path, out var existing))
+            return existing;
+
+        var og = new ObjectGroupViewModel(path);
         cg.Objects.Add(og);
+        objects.Add(path, og);
         return og;
     }
 }

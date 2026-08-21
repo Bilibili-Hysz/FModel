@@ -19,7 +19,8 @@ namespace FModel.ViewModels;
 internal static class FModelV3ExporterFactory
 {
     private const string MaterialModeVariable = "FMODEL_V3_UEFORMAT_MATERIAL_MODE";
-    private static readonly ConcurrentDictionary<string, byte> PendingOwnedObjectPaths = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> PendingOwnedObjectPaths =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public static bool IsEnabled => true;
 
@@ -31,39 +32,42 @@ internal static class FModelV3ExporterFactory
             ?? new FModelUeFormatPolicy(true, FModelV3ExportSessionState.Current.MaterialMode);
     }
 
-    internal static bool TrackQueued(UObject export)
+    internal static bool TrackQueued(UObject export, string operationId)
     {
         ArgumentNullException.ThrowIfNull(export);
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationId);
         if (!IsSupported(export))
             return false;
 
-        PendingOwnedObjectPaths.TryAdd(export.GetPathName(), 0);
+        PendingOwnedObjectPaths
+            .GetOrAdd(operationId, static _ => new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase))
+            .TryAdd(export.GetPathName(), 0);
         return true;
     }
 
-    internal static void ForgetOwnedObjectPath(string objectPath)
+    internal static void ForgetOwnedObjectPath(string operationId, string objectPath)
     {
-        if (!string.IsNullOrWhiteSpace(objectPath))
-            PendingOwnedObjectPaths.TryRemove(objectPath, out _);
-    }
-
-    internal static IReadOnlyList<ExportResult> TakeOwnedResults(IReadOnlyList<ExportResult> results)
-    {
-        ArgumentNullException.ThrowIfNull(results);
-        var owned = new List<ExportResult>();
-        foreach (var result in results)
+        if (!string.IsNullOrWhiteSpace(operationId)
+            && !string.IsNullOrWhiteSpace(objectPath)
+            && PendingOwnedObjectPaths.TryGetValue(operationId, out var ownedPaths))
         {
-            if (PendingOwnedObjectPaths.TryRemove(result.ObjectPath, out _))
-                owned.Add(result);
+            ownedPaths.TryRemove(objectPath, out _);
         }
-        return owned;
     }
 
-    internal static bool ClearPending()
+    internal static bool TryTakeOwnedResult(string operationId, string objectPath)
     {
-        var hadPending = !PendingOwnedObjectPaths.IsEmpty;
-        PendingOwnedObjectPaths.Clear();
-        return hadPending;
+        return !string.IsNullOrWhiteSpace(operationId)
+            && !string.IsNullOrWhiteSpace(objectPath)
+            && PendingOwnedObjectPaths.TryGetValue(operationId, out var ownedPaths)
+            && ownedPaths.TryRemove(objectPath, out _);
+    }
+
+    internal static bool ClearPending(string operationId)
+    {
+        return !string.IsNullOrWhiteSpace(operationId)
+            && PendingOwnedObjectPaths.TryRemove(operationId, out var ownedPaths)
+            && !ownedPaths.IsEmpty;
     }
 
     internal static FModelUeFormatMaterialMode ReadMaterialMode()
