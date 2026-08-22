@@ -6,10 +6,15 @@ using CUE4Parse.FModelUEFormat.ExportPipeline.Diagnostics;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Formats;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Pipeline;
 using CUE4Parse.UE4.Assets.Exports;
+using CUE4Parse.UE4.Assets.Exports.Animation;
+using CUE4Parse.UE4.Objects.Engine.Animation;
 using CUE4Parse_Conversion;
 using CUE4Parse_Conversion.Exporters;
+using CUE4Parse_Conversion.Formats.Animations;
 using CUE4Parse_Conversion.Formats.Meshes;
+using CUE4Parse_Conversion.Formats.PoseAsset;
 using CUE4Parse_Conversion.Options;
+using CUE4Parse_Conversion.Writers.UEFormat;
 using FModel.ViewModels;
 
 namespace FModel.Services;
@@ -48,6 +53,57 @@ internal sealed class FModelV3ExportSessionExtension : IExportSessionExtension
 
         return new FModelUeFormatMeshFormat(policy, session, export, ReportDiagnostic);
     }
+
+    public IAnimExportFormat? TryCreateAnimationFormat(
+        UAnimationAsset export,
+        EMeshFormat format,
+        ExportSession session)
+    {
+        ArgumentNullException.ThrowIfNull(export);
+        ArgumentNullException.ThrowIfNull(session);
+
+        if (format != EMeshFormat.UEFormat || !FModelV3ExporterFactory.IsEnabled)
+            return null;
+        if (!export.Skeleton.TryLoad<USkeleton>(out var skeleton) || skeleton is null)
+        {
+            ReportMissingSkeleton(export.GetPathName(), "animation");
+            return null;
+        }
+
+        return new UEFormatAnimFormat(
+            export.GetPathName(),
+            FModelSkeletonIdentity.FromSkeleton(skeleton));
+    }
+
+    public IPoseExportFormat? TryCreatePoseFormat(
+        UPoseAsset export,
+        EMeshFormat format,
+        ExportSession session)
+    {
+        ArgumentNullException.ThrowIfNull(export);
+        ArgumentNullException.ThrowIfNull(session);
+
+        if (format != EMeshFormat.UEFormat || !FModelV3ExporterFactory.IsEnabled)
+            return null;
+        if (!export.Skeleton.TryLoad<USkeleton>(out var skeleton) || skeleton is null)
+        {
+            ReportMissingSkeleton(export.GetPathName(), "pose asset");
+            return null;
+        }
+
+        return new UEFormatPoseFormat(
+            export.GetPathName(),
+            FModelSkeletonIdentity.FromSkeleton(skeleton));
+    }
+
+    private static void ReportMissingSkeleton(string objectPath, string kind) =>
+        ReportDiagnostic(new FModelUeFormatPipelineDiagnostic(
+            "skeleton.identity.unavailable",
+            FModelUeFormatDiagnosticSeverity.Warning,
+            FModelUeFormatPipelineStage.Eligibility,
+            objectPath,
+            $"FModel {kind} provenance was omitted because the target skeleton could not be resolved; standard UEFormat output was preserved.",
+            recovery: "Export the target skeleton first or import this standard-only animation/pose without FModel identity validation."));
 
     private static void ReportDiagnostic(FModelUeFormatPipelineDiagnostic diagnostic)
     {
