@@ -1,28 +1,33 @@
-using CUE4Parse_Conversion;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Diagnostics;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Materials;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Pipeline;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Writers;
 using CUE4Parse.UE4.Assets.Exports;
+using CUE4Parse.UE4.Assets.Exports.Animation;
+using CUE4Parse.UE4.Assets.Exports.SkeletalMesh;
+using CUE4Parse.UE4.Writers;
+using CUE4Parse_Conversion;
 using CUE4Parse_Conversion.Dto;
 using CUE4Parse_Conversion.Formats.Meshes;
 using CUE4Parse_Conversion.Options;
+using CUE4Parse_Conversion.Writers.UEFormat;
+using CUE4Parse_Conversion.Writers.UEFormat.Structs;
 
 namespace CUE4Parse.FModelUEFormat.ExportPipeline.Formats;
 
 /// <summary>
-/// Standard-preserving UEFormat decorator. It appends V3 chunks only after upstream
-/// UEModel serialization; TextureExporter remains the source of output bytes and paths.
+/// UEFormat V10 mesh adapter. Standard attributes remain owned by the official
+/// UEModel writer; FModel attributes are inserted through its root-attribute
+/// callback before the body is serialized and compressed.
 /// </summary>
 public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
 {
-    private readonly UEFormatMeshFormat upstream = new();
     private readonly FModelUeFormatPolicy policy;
     private readonly Action<FModelUeFormatPipelineDiagnostic>? diagnosticSink;
     private readonly ExportSession? session;
     private readonly UObject? sourceObject;
     private readonly FModelMaterialProjectionBuilder projectionBuilder = new();
-    private readonly FModelUeModelExtensionComposer extensionComposer = new();
+    private readonly FModelV10AttributeWriter attributeWriter = new();
 
     public FModelUeFormatMeshFormat(
         FModelUeFormatPolicy policy,
@@ -43,70 +48,43 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
         this.sourceObject = sourceObject ?? throw new ArgumentNullException(nameof(sourceObject));
     }
 
-    public string DisplayName => "UEFormat (V3 adapter)";
-
-    public IReadOnlyList<ExportFile> BuildStaticMesh(string objectName, ExportOptions options, StaticMeshDto dto, IReadOnlyDictionary<string, string>? materialPaths = null)
-    {
-        var context = CreateBoundContext(dto, objectName);
-        return BuildStaticMesh(objectName, context.ObjectPath, options, dto, materialPaths, context.TexturePreview, context.OwnerModelUri);
-    }
-
-    public IReadOnlyList<ExportFile> BuildStaticMesh(
-        string objectName,
-        ExportOptions options,
-        StaticMeshDto dto,
-        IReadOnlyDictionary<string, string>? materialPaths,
-        FModelTextureExportPreview? texturePreview,
-        string? ownerModelUri = null)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(objectName);
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(dto);
-        return BuildStaticMesh(objectName, BuildObjectPath(dto, objectName), options, dto, materialPaths, texturePreview, ownerModelUri);
-    }
+    public string DisplayName => "UEFormat (V10 FModel adapter)";
 
     public IReadOnlyList<ExportFile> BuildStaticMesh(
         string objectName,
         string objectPath,
         ExportOptions options,
         StaticMeshDto dto,
-        IReadOnlyDictionary<string, string>? materialPaths = null,
-        FModelTextureExportPreview? texturePreview = null,
-        string? ownerModelUri = null)
+        IReadOnlyDictionary<string, string>? materialPaths = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(objectName);
         ArgumentException.ThrowIfNullOrWhiteSpace(objectPath);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(dto);
 
-        var upstreamFiles = upstream.BuildStaticMesh(objectName, options, dto, materialPaths);
-        return AppendMaterialProjection(
-            objectPath,
+        var context = CreateBoundContext(objectPath);
+        var projection = TryBuildProjection(
+            context.ObjectPath,
             "static mesh",
-            upstreamFiles,
             dto.Materials.Length,
             dto.LODs.Count == 0 ? 0 : dto.LODs[0].Sections.Length,
-            () => projectionBuilder.BuildFromStaticMeshDto(objectPath, dto, options, policy, texturePreview, ownerModelUri));
-    }
+            () => projectionBuilder.BuildFromStaticMeshDto(
+                context.ObjectPath,
+                dto,
+                options,
+                policy,
+                context.TexturePreview,
+                context.OwnerModelUri));
 
-    public IReadOnlyList<ExportFile> BuildSkeletalMesh(string objectName, ExportOptions options, SkeletalMeshDto dto, IReadOnlyDictionary<string, string>? materialPaths = null)
-    {
-        var context = CreateBoundContext(dto, objectName);
-        return BuildSkeletalMesh(objectName, context.ObjectPath, options, dto, materialPaths, context.TexturePreview, context.OwnerModelUri);
-    }
-
-    public IReadOnlyList<ExportFile> BuildSkeletalMesh(
-        string objectName,
-        ExportOptions options,
-        SkeletalMeshDto dto,
-        IReadOnlyDictionary<string, string>? materialPaths,
-        FModelTextureExportPreview? texturePreview,
-        string? ownerModelUri = null)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(objectName);
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(dto);
-        return BuildSkeletalMesh(objectName, BuildObjectPath(dto, objectName), options, dto, materialPaths, texturePreview, ownerModelUri);
+        return SaveModel(
+            () => new UEModel(
+                objectName,
+                context.ObjectPath,
+                dto,
+                options,
+                extensionBuilder: BuildExtension(projection, dto.Materials.Length, null)),
+            () => new UEModel(objectName, context.ObjectPath, dto, options),
+            context.ObjectPath);
     }
 
     public IReadOnlyList<ExportFile> BuildSkeletalMesh(
@@ -114,32 +92,146 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
         string objectPath,
         ExportOptions options,
         SkeletalMeshDto dto,
-        IReadOnlyDictionary<string, string>? materialPaths = null,
-        FModelTextureExportPreview? texturePreview = null,
-        string? ownerModelUri = null)
+        IReadOnlyDictionary<string, string>? materialPaths = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(objectName);
         ArgumentException.ThrowIfNullOrWhiteSpace(objectPath);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(dto);
 
-        var upstreamFiles = upstream.BuildSkeletalMesh(objectName, options, dto, materialPaths);
-        return AppendMaterialProjection(
-            objectPath,
+        var context = CreateBoundContext(objectPath);
+        var projection = TryBuildProjection(
+            context.ObjectPath,
             "skeletal mesh",
-            upstreamFiles,
             dto.Materials.Length,
             dto.LODs.Count == 0 ? 0 : dto.LODs[0].Sections.Length,
-            () => projectionBuilder.BuildFromSkeletalMeshDto(objectPath, dto, options, policy, texturePreview, ownerModelUri));
+            () => projectionBuilder.BuildFromSkeletalMeshDto(
+                context.ObjectPath,
+                dto,
+                options,
+                policy,
+                context.TexturePreview,
+                context.OwnerModelUri));
+        var identity = TryCreateSkeletonIdentity();
+
+        return SaveModel(
+            () => new UEModel(
+                objectName,
+                context.ObjectPath,
+                dto,
+                options,
+                extensionBuilder: BuildExtension(projection, dto.Materials.Length, identity)),
+            () => new UEModel(
+                objectName,
+                context.ObjectPath,
+                dto,
+                options,
+                extensionBuilder: BuildExtension(null, 0, identity)),
+            context.ObjectPath);
     }
 
-    public IReadOnlyList<ExportFile> BuildSkeleton(string objectName, ExportOptions options, SkeletonDto dto)
-        => upstream.BuildSkeleton(objectName, options, dto);
+    public IReadOnlyList<ExportFile> BuildSkeleton(
+        string objectName,
+        string objectPath,
+        ExportOptions options,
+        SkeletonDto dto)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(objectName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(objectPath);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(dto);
 
-    private BoundContext CreateBoundContext(ObjectDto dto, string objectName)
+        var identity = TryCreateSkeletonIdentity();
+        using var archive = new FArchiveWriter();
+        new UEModel(
+            objectName,
+            objectPath,
+            dto,
+            options,
+            BuildExtension(null, 0, identity)).Save(archive);
+        return [new ExportFile("uemodel", archive.GetBuffer())];
+    }
+
+    private FModelMaterialProjection? TryBuildProjection(
+        string objectPath,
+        string meshKind,
+        int sourceMaterialCount,
+        int requiredSectionCount,
+        Func<FModelMaterialProjection> projectionFactory)
+    {
+        if (!policy.Enabled || policy.MaterialMode == FModelUeFormatMaterialMode.Disabled)
+            return null;
+
+        var projection = projectionFactory();
+        Publish(projection.Diagnostics);
+        if (projection.Materials.Count == 0)
+        {
+            if (policy.RequiresCompleteMaterialProjection)
+                throw new InvalidOperationException("Strict material projection produced no material links.");
+            PublishFallback(
+                objectPath,
+                "material.projection.empty",
+                $"V10 FModel material attributes were omitted for {meshKind} because no complete projection was available.");
+            return null;
+        }
+        if (sourceMaterialCount <= 0 || projection.Materials.Count != requiredSectionCount)
+        {
+            if (policy.RequiresCompleteMaterialProjection)
+                throw new InvalidOperationException("Strict material projection does not cover every standard LOD0 material section.");
+            PublishFallback(
+                objectPath,
+                "material.projection.incomplete",
+                $"V10 FModel material attributes were omitted for {meshKind} because the projection did not cover every LOD0 section.");
+            return null;
+        }
+
+        return projection;
+    }
+
+    private Action<FDataAttributeSet>? BuildExtension(
+        FModelMaterialProjection? projection,
+        int sourceMaterialCount,
+        FModelSkeletonIdentity? identity)
+    {
+        if (projection is null && identity is null)
+            return null;
+
+        return root =>
+        {
+            if (projection is not null)
+                attributeWriter.WriteProjection(root, projection, sourceMaterialCount);
+            if (identity is not null)
+                FModelSkeletonExtensionWriter.WriteModelIdentity(root, identity);
+        };
+    }
+
+    private IReadOnlyList<ExportFile> SaveModel(
+        Func<UEModel> extendedFactory,
+        Func<UEModel> standardFallbackFactory,
+        string objectPath)
+    {
+        try
+        {
+            using var archive = new FArchiveWriter();
+            extendedFactory().Save(archive);
+            return [new ExportFile("uemodel", archive.GetBuffer())];
+        }
+        catch when (!policy.RequiresCompleteMaterialProjection)
+        {
+            PublishFallback(
+                objectPath,
+                "material.extension.fallback",
+                "V10 FModel material attribute validation failed; standard UEFormat output was preserved.");
+            using var archive = new FArchiveWriter();
+            standardFallbackFactory().Save(archive);
+            return [new ExportFile("uemodel", archive.GetBuffer())];
+        }
+    }
+
+    private BoundContext CreateBoundContext(string objectPath)
     {
         if (session is null || sourceObject is null)
-            return new BoundContext(BuildObjectPath(dto, objectName), null, null);
+            return new BoundContext(objectPath, null, null);
 
         var ownerUriRoot = policy.ResourceUriRoot == FModelUeFormatResourceUriRoot.RelativeToOwner
             ? FModelUeFormatResourceUriRoot.ExportRoot
@@ -154,48 +246,15 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
             ownerModelUri);
     }
 
-    private IReadOnlyList<ExportFile> AppendMaterialProjection(
-        string objectPath,
-        string meshKind,
-        IReadOnlyList<ExportFile> upstreamFiles,
-        int sourceMaterialCount,
-        int requiredSectionCount,
-        Func<FModelMaterialProjection> projectionFactory)
+    private FModelSkeletonIdentity? TryCreateSkeletonIdentity()
     {
-        if (!policy.Enabled || policy.MaterialMode == FModelUeFormatMaterialMode.Disabled)
-            return upstreamFiles;
-        if (upstreamFiles.Count != 1 || !string.Equals(upstreamFiles[0].Extension, "uemodel", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException($"Upstream UEFormat {meshKind} serialization must return exactly one .uemodel file.");
-
-        var projection = projectionFactory();
-        Publish(projection.Diagnostics);
-        if (projection.Materials.Count == 0)
-        {
-            if (policy.RequiresCompleteMaterialProjection)
-                throw new InvalidOperationException("Strict material projection produced no material links.");
-            PublishFallback(objectPath, "material.projection.empty", "V3 material links were omitted because no complete material projection was available.");
-            return upstreamFiles;
-        }
-        if (projection.Materials.Count != requiredSectionCount)
-        {
-            if (policy.RequiresCompleteMaterialProjection)
-                throw new InvalidOperationException("Strict material projection does not cover every standard LOD0 material section.");
-            PublishFallback(objectPath, "material.projection.incomplete", "V3 material links were omitted because they did not cover every standard LOD0 material section.");
-            return upstreamFiles;
-        }
-
-        try
-        {
-            var bytes = extensionComposer.AppendMaterialLinks(upstreamFiles[0].Data, projection, sourceMaterialCount);
-            return [new ExportFile("uemodel", bytes)];
-        }
-        catch when (!policy.RequiresCompleteMaterialProjection)
-        {
-            // Linked mode keeps the upstream standard output if optional V3 projection
-            // cannot be validated. It never emits a partial extension chunk.
-            PublishFallback(objectPath, "material.extension.fallback", "V3 material extension validation failed; standard UEFormat output was preserved.");
-            return upstreamFiles;
-        }
+        if (sourceObject is USkeleton skeleton)
+            return FModelSkeletonIdentity.FromSkeleton(skeleton);
+        if (sourceObject is USkeletalMesh mesh &&
+            mesh.Skeleton.TryLoad<USkeleton>(out var resolvedSkeleton) &&
+            resolvedSkeleton is not null)
+            return FModelSkeletonIdentity.FromSkeleton(resolvedSkeleton);
+        return null;
     }
 
     private void Publish(IEnumerable<FModelUeFormatPipelineDiagnostic> diagnostics)
@@ -216,9 +275,6 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
             message,
             recovery: "Use strict material mode to turn this fallback into a hard export failure."));
     }
-
-    private static string BuildObjectPath(ObjectDto dto, string objectName) =>
-        string.IsNullOrWhiteSpace(dto.Path) ? objectName : dto.Path + "." + objectName;
 
     private readonly record struct BoundContext(
         string ObjectPath,
