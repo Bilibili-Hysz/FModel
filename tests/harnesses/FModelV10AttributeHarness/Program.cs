@@ -3,6 +3,8 @@ using CUE4Parse.FModelUEFormat.ExportPipeline.Materials;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Writers;
 using CUE4Parse.UeFormat.UEModel;
 using CUE4Parse.UE4.Writers;
+using CUE4Parse.UE4.Objects.Core.Math;
+using CUE4Parse.UE4.Objects.Meshes;
 using CUE4Parse_Conversion.Options;
 using CUE4Parse_Conversion.Writers.UEFormat;
 using CUE4Parse_Conversion.Writers.UEFormat.Enums;
@@ -17,6 +19,7 @@ var outputDirectory = args.Length == 1
 Directory.CreateDirectory(outputDirectory);
 
 var projection = CreateProjection();
+WriteProjectedTextures(outputDirectory, projection);
 var identity = new FModelSkeletonIdentity(
     "/CodeWorld/Content/Characters/Heroes/SKEL_FM_Base.SKEL_FM_Base",
     null,
@@ -39,7 +42,11 @@ foreach (var compression in new[]
         identity);
     using var archive = new FArchiveWriter();
     model.Save(archive);
-    var output = Path.Combine(outputDirectory, $"fmodel_v10_{compression.ToString().ToLowerInvariant()}.uemodel");
+    var output = Path.Combine(
+        outputDirectory,
+        "models",
+        $"fmodel_v10_{compression.ToString().ToLowerInvariant()}.uemodel");
+    Directory.CreateDirectory(Path.GetDirectoryName(output)!);
     File.WriteAllBytes(output, archive.GetBuffer());
     outputs.Add(output);
 }
@@ -54,9 +61,9 @@ static FModelMaterialProjection CreateProjection()
 {
     var resources = new[]
     {
-        Resource("texture.basecolor", "../Textures/T_FModelV10_BaseColor.png", 0x11),
-        Resource("texture.normal", "../Textures/T_FModelV10_Normal.png", 0x22),
-        Resource("texture.orm", "../Textures/T_FModelV10_Orm.png", 0x33)
+        Resource("texture.basecolor", "../Textures/T_FModelV10_BaseColor.png"),
+        Resource("texture.normal", "../Textures/T_FModelV10_Normal.png"),
+        Resource("texture.orm", "../Textures/T_FModelV10_Orm.png")
     };
     var textures = new[]
     {
@@ -76,13 +83,17 @@ static FModelMaterialProjection CreateProjection()
         Array.Empty<CUE4Parse.FModelUEFormat.ExportPipeline.Diagnostics.FModelUeFormatPipelineDiagnostic>(),
         resources);
 
-    static FModelTextureResourceProjection Resource(string id, string uri, byte seed) => new(
-        id,
-        $"/CodeWorld/Content/Textures/{id}.{id}",
-        uri,
-        4,
-        Enumerable.Repeat(seed, 32).ToArray(),
-        LocationMode: FModelTextureResourceLocation.Relative);
+    static FModelTextureResourceProjection Resource(string id, string uri)
+    {
+        var data = Png1x1();
+        return new FModelTextureResourceProjection(
+            id,
+            $"/CodeWorld/Content/Textures/{id}.{id}",
+            uri,
+            data.Length,
+            SHA256.HashData(data),
+            LocationMode: FModelTextureResourceLocation.Relative);
+    }
 
     static FModelTextureLinkProjection Link(
         string parameter,
@@ -97,6 +108,25 @@ static FModelMaterialProjection CreateProjection()
         kind,
         isSrgb,
         "Body");
+}
+
+static byte[] Png1x1() => Convert.FromBase64String(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/5ncLrgAAAABJRU5ErkJggg==");
+
+static void WriteProjectedTextures(string outputDirectory, FModelMaterialProjection projection)
+{
+    var modelDirectory = Path.Combine(outputDirectory, "models");
+    foreach (var resource in projection.TextureResources)
+    {
+        var outputPath = Path.GetFullPath(Path.Combine(
+            modelDirectory,
+            resource.LogicalResourceUri.Replace('/', Path.DirectorySeparatorChar)));
+        var outputRoot = Path.GetFullPath(outputDirectory) + Path.DirectorySeparatorChar;
+        if (!outputPath.StartsWith(outputRoot, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Fixture texture escaped output root: {resource.LogicalResourceUri}");
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+        File.WriteAllBytes(outputPath, Png1x1());
+    }
 }
 
 sealed class SyntheticModel : UEFormatExport
@@ -118,12 +148,68 @@ sealed class SyntheticModel : UEFormatExport
         this.identity = identity;
         WriteRoot(root =>
         {
-            // A zero-length standard LODS attribute is valid and lets Blender
-            // exercise standard parsing and unknown FMODEL_* skipping without
-            // inventing a synthetic mesh topology.
-            root.AddAttribute("LODS", attribute => attribute.Write(0));
+            WriteTriangleLod(root);
             new FModelV10AttributeWriter().WriteProjection(root, projection, 1);
             FModelSkeletonExtensionWriter.WriteModelIdentity(root, identity);
         });
+    }
+
+    private static void WriteTriangleLod(FDataAttributeSet root)
+    {
+        root.AddAttribute("LODS", attribute => attribute.WriteArray(
+            new[] { "LOD0" },
+            (writer, _) =>
+            {
+                writer.WriteFString("LOD0");
+                writer.WriteAttributes(attrs =>
+                {
+                    attrs.AddAttribute("VERTICES", data => data.WriteArray(
+                        new[]
+                        {
+                            new FVector(0, 0, 0),
+                            new FVector(1, 0, 0),
+                            new FVector(0, 1, 0),
+                        },
+                        (vertexWriter, vertex) => vertex.Serialize(vertexWriter)));
+                    attrs.AddAttribute("NORMALS", data => data.WriteArray(
+                        new[]
+                        {
+                            new FVector4(0, 0, 1, 1),
+                            new FVector4(0, 0, 1, 1),
+                            new FVector4(0, 0, 1, 1),
+                        },
+                        (normalWriter, normal) =>
+                        {
+                            normalWriter.Write(normal.W);
+                            new FVector(normal.X, normal.Y, normal.Z).Serialize(normalWriter);
+                        }));
+                    attrs.AddAttribute("TEXCOORDS", data => data.WriteArray(
+                        new[] { "UV0" },
+                        (uvSetWriter, uvSetName) =>
+                        {
+                            uvSetWriter.WriteFString(uvSetName);
+                            uvSetWriter.WriteArray(
+                                new[]
+                                {
+                                    new FMeshUVFloat(0, 0),
+                                    new FMeshUVFloat(1, 0),
+                                    new FMeshUVFloat(0, 1),
+                                },
+                                (uvWriter, uv) => uv.Serialize(uvWriter));
+                        }));
+                    attrs.AddAttribute("INDICES", data => data.WriteArray(
+                        new uint[] { 0, 1, 2 },
+                        (indexWriter, index) => indexWriter.Write(index)));
+                    attrs.AddAttribute("MATERIALS", data => data.WriteArray(
+                        new[] { (Name: "Body", Path: "/CodeWorld/Content/Materials/M_FModelV10_Body.M_FModelV10_Body", First: 0, Faces: 1) },
+                        (materialWriter, material) =>
+                        {
+                            materialWriter.WriteFString(material.Name);
+                            materialWriter.WriteFString(material.Path);
+                            materialWriter.Write(material.First);
+                            materialWriter.Write(material.Faces);
+                        }));
+                });
+            }));
     }
 }
