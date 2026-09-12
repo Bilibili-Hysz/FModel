@@ -67,6 +67,9 @@ internal sealed class FModelV3ExportSessionExtension : IExportSessionExtension
         if (!export.Skeleton.TryLoad<USkeleton>(out var skeleton) || skeleton is null)
         {
             ReportMissingSkeleton(export.GetPathName(), "animation");
+            // Returning null is part of the extension contract: the official
+            // UEFormat exporter remains responsible for the standard payload
+            // when the optional identity decorator cannot be created.
             return null;
         }
 
@@ -88,6 +91,8 @@ internal sealed class FModelV3ExportSessionExtension : IExportSessionExtension
         if (!export.Skeleton.TryLoad<USkeleton>(out var skeleton) || skeleton is null)
         {
             ReportMissingSkeleton(export.GetPathName(), "pose asset");
+            // Returning null preserves the official standard-only UEFormat
+            // path for assets whose target skeleton is not resolvable.
             return null;
         }
 
@@ -102,8 +107,8 @@ internal sealed class FModelV3ExportSessionExtension : IExportSessionExtension
             FModelUeFormatDiagnosticSeverity.Warning,
             FModelUeFormatPipelineStage.Eligibility,
             objectPath,
-            $"FModel {kind} provenance was omitted because the target skeleton could not be resolved; standard UEFormat output was preserved.",
-            recovery: "Export the target skeleton first or import this standard-only animation/pose without FModel identity validation."));
+            $"FModel {kind} identity extension was skipped because the target skeleton could not be resolved; standard UEFormat output remains available.",
+            recovery: "The official UEFormat exporter will continue with standard-only output. Export the target skeleton first to enable FModel identity metadata."));
 
     private static void ReportDiagnostic(FModelUeFormatPipelineDiagnostic diagnostic)
     {

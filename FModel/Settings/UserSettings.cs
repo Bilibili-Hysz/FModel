@@ -20,7 +20,13 @@ namespace FModel.Settings;
 public sealed class UserSettings : ViewModel
 {
     public static UserSettings Default { get; set; }
-    public static readonly string FilePath = Path.Combine(AppContext.BaseDirectory, "AppSettings.json");
+    // Keep this customized distribution self-contained so it never shares the
+    // official FModel profile under %AppData% or beside a separately installed executable.
+#if DEBUG
+    public static readonly string FilePath = Path.Combine(AppContext.BaseDirectory, "Output", "AppSettings_Debug.json");
+#else
+    public static readonly string FilePath = Path.Combine(AppContext.BaseDirectory, "Output", "AppSettings.json");
+#endif
 
     static UserSettings()
     {
@@ -31,6 +37,9 @@ public sealed class UserSettings : ViewModel
     public static void Save()
     {
         if (!_bSave || Default == null) return;
+        var directory = Path.GetDirectoryName(FilePath);
+        if (!string.IsNullOrEmpty(directory))
+            Directory.CreateDirectory(directory);
         Default.PerDirectory[Default.CurrentDir.GameDirectory] = Default.CurrentDir;
         File.WriteAllText(FilePath, JsonConvert.SerializeObject(Default, Formatting.Indented));
     }

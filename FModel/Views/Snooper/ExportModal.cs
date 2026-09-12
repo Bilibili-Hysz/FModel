@@ -119,9 +119,16 @@ public sealed class ExportModal
                 var results = await session.RunAsync(exportDirectory, options, _progress, token);
                 lock (_stateLock)
                     _exportResults = results;
+                FModel.Services.FModelV3ExportFeedback.Report(
+                    results,
+                    exportDirectory,
+                    options.MeshFormat == EMeshFormat.UEFormat,
+                    session.OperationId);
             }
             catch (OperationCanceledException)
             {
+                if (session is not null)
+                    FModel.Services.FModelV3ExportFeedback.ReportCanceled(session.OperationId);
                 Log.Error("Export cancelled by user");
             }
             catch (Exception ex)

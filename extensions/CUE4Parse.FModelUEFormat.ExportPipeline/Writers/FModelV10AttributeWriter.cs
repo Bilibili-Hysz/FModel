@@ -41,17 +41,22 @@ public sealed class FModelV10AttributeWriter
         var materialChunk = ParseLegacyChunk(
             FModelMaterialLinkChunkWriter.WriteV2(
                 new StaticMeshMaterialLinkSet(sourceMaterialCount, links)));
+        // Build every chunk before mutating the caller's root. This keeps
+        // validation/serialization failures atomic for Linked mode; the
+        // caller can then preserve a standard-only UEFormat file.
+        UeFormatExtensionChunk? textureChunk = null;
+        if (projection.Textures.Count > 0)
+        {
+            var textureSet = BuildTextureResourceSet(projection);
+            textureChunk = textureSet.Textures.Any(
+                    texture => texture.LocationMode != FModelTextureResourceLocation.ExportRoot)
+                ? FModelTextureChunkWriter.WriteV2(textureSet)
+                : FModelTextureChunkWriter.WriteV1(textureSet);
+        }
+
         WriteAttribute(root, materialChunk);
-
-        if (projection.Textures.Count == 0)
-            return;
-
-        var textureSet = BuildTextureResourceSet(projection);
-        var textureChunk = textureSet.Textures.Any(
-            texture => texture.LocationMode != FModelTextureResourceLocation.ExportRoot)
-            ? FModelTextureChunkWriter.WriteV2(textureSet)
-            : FModelTextureChunkWriter.WriteV1(textureSet);
-        WriteAttribute(root, textureChunk);
+        if (textureChunk is not null)
+            WriteAttribute(root, textureChunk);
     }
 
     private static void WriteAttribute(FDataAttributeSet root, UeFormatExtensionChunk chunk)
@@ -66,15 +71,24 @@ public sealed class FModelV10AttributeWriter
 
     private static TextureResourceSet BuildTextureResourceSet(FModelMaterialProjection projection)
     {
+        ValidateTextureBindingMaterialIds(projection);
+
         var resources = projection.TextureResources
             .OrderBy(resource => resource.StableId, StringComparer.Ordinal)
-            .Select(resource => new TextureResource(
-                resource.StableId,
-                resource.LogicalResourceUri,
-                resource.ByteLength,
-                resource.Sha256.ToImmutableArray(),
-                resource.IsEmbedded,
-                resource.LocationMode))
+            .Select(resource =>
+            {
+                if (resource.IsEmbedded)
+                    throw new InvalidOperationException(
+                        $"V10 FMODEL_TEXTURES identity resource '{resource.StableId}' is marked embedded, " +
+                        "but the V10 attribute carries identity metadata only and no texture bytes.");
+                return new TextureResource(
+                    resource.StableId,
+                    resource.LogicalResourceUri,
+                    resource.ByteLength,
+                    resource.Sha256.ToImmutableArray(),
+                    resource.IsEmbedded,
+                    resource.LocationMode);
+            })
             .ToImmutableArray();
         if (resources.Length == 0)
             throw new InvalidOperationException("Texture bindings exist but no texture resources were projected.");
@@ -128,6 +142,27 @@ public sealed class FModelV10AttributeWriter
                 .OrderBy(binding => binding.MaterialId, StringComparer.Ordinal)
                 .ThenBy(binding => binding.MapKind)
                 .ToImmutableArray());
+    }
+
+    private static void ValidateTextureBindingMaterialIds(FModelMaterialProjection projection)
+    {
+        var ambiguousSlotNames = projection.Materials
+            .GroupBy(material => material.SlotName, StringComparer.Ordinal)
+            .Where(group => group
+                .Select(material => material.SourceIdentity)
+                .Distinct(StringComparer.Ordinal)
+                .Skip(1)
+                .Any())
+            .Select(group => group.Key)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        if (ambiguousSlotNames.Length > 0)
+        {
+            throw new InvalidOperationException(
+                "V10 texture bindings use slot names as MaterialId, but these slot names resolve to multiple Unreal material identities: " +
+                string.Join(", ", ambiguousSlotNames));
+        }
     }
 
     private static UeFormatExtensionChunk ParseLegacyChunk(byte[] bytes)

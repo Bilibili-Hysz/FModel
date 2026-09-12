@@ -65,15 +65,24 @@ public sealed class FModelUeModelExtensionComposer
 
     private static TextureResourceSet BuildTextureResourceSet(FModelMaterialProjection projection)
     {
+        ValidateTextureBindingMaterialIds(projection);
+
         var resources = projection.TextureResources
             .OrderBy(resource => resource.StableId, StringComparer.Ordinal)
-            .Select(resource => new TextureResource(
-                resource.StableId,
-                resource.LogicalResourceUri,
-                resource.ByteLength,
-                resource.Sha256.ToImmutableArray(),
-                resource.IsEmbedded,
-                resource.LocationMode))
+            .Select(resource =>
+            {
+                if (resource.IsEmbedded)
+                    throw new InvalidOperationException(
+                        $"FMODEL_TEXTURES identity resource '{resource.StableId}' is marked embedded, " +
+                        "but this identity table carries no texture bytes.");
+                return new TextureResource(
+                    resource.StableId,
+                    resource.LogicalResourceUri,
+                    resource.ByteLength,
+                    resource.Sha256.ToImmutableArray(),
+                    resource.IsEmbedded,
+                    resource.LocationMode);
+            })
             .ToImmutableArray();
 
         if (resources.Length == 0)
@@ -109,6 +118,27 @@ public sealed class FModelUeModelExtensionComposer
         }
 
         return new TextureResourceSet(resources, bindings.ToImmutableArray());
+    }
+
+    private static void ValidateTextureBindingMaterialIds(FModelMaterialProjection projection)
+    {
+        var ambiguousSlotNames = projection.Materials
+            .GroupBy(material => material.SlotName, StringComparer.Ordinal)
+            .Where(group => group
+                .Select(material => material.SourceIdentity)
+                .Distinct(StringComparer.Ordinal)
+                .Skip(1)
+                .Any())
+            .Select(group => group.Key)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        if (ambiguousSlotNames.Length > 0)
+        {
+            throw new InvalidOperationException(
+                "Texture bindings use slot names as MaterialId, but these slot names resolve to multiple Unreal material identities: " +
+                string.Join(", ", ambiguousSlotNames));
+        }
     }
 
     private static byte[] SerializeChunk(UeFormatExtensionChunk chunk)

@@ -68,6 +68,8 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
             "static mesh",
             dto.Materials.Length,
             dto.LODs.Count == 0 ? 0 : dto.LODs[0].Sections.Length,
+            HasCompatibleLodMaterialTopology(dto.LODs.Select(lod =>
+                (IReadOnlyList<int>)lod.Sections.Select(section => section.MaterialIndex).ToArray())),
             () => projectionBuilder.BuildFromStaticMeshDto(
                 context.ObjectPath,
                 dto,
@@ -82,9 +84,7 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
                 context.ObjectPath,
                 dto,
                 options,
-                extensionBuilder: BuildExtension(projection, dto.Materials.Length, null)),
-            () => new UEModel(objectName, context.ObjectPath, dto, options),
-            context.ObjectPath);
+                extensionBuilder: BuildExtension(context.ObjectPath, projection, dto.Materials.Length, null)));
     }
 
     public IReadOnlyList<ExportFile> BuildSkeletalMesh(
@@ -105,6 +105,8 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
             "skeletal mesh",
             dto.Materials.Length,
             dto.LODs.Count == 0 ? 0 : dto.LODs[0].Sections.Length,
+            HasCompatibleLodMaterialTopology(dto.LODs.Select(lod =>
+                (IReadOnlyList<int>)lod.Sections.Select(section => section.MaterialIndex).ToArray())),
             () => projectionBuilder.BuildFromSkeletalMeshDto(
                 context.ObjectPath,
                 dto,
@@ -120,14 +122,7 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
                 context.ObjectPath,
                 dto,
                 options,
-                extensionBuilder: BuildExtension(projection, dto.Materials.Length, identity)),
-            () => new UEModel(
-                objectName,
-                context.ObjectPath,
-                dto,
-                options,
-                extensionBuilder: BuildExtension(null, 0, identity)),
-            context.ObjectPath);
+                extensionBuilder: BuildExtension(context.ObjectPath, projection, dto.Materials.Length, identity)));
     }
 
     public IReadOnlyList<ExportFile> BuildSkeleton(
@@ -148,7 +143,7 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
             objectPath,
             dto,
             options,
-            BuildExtension(null, 0, identity)).Save(archive);
+            BuildExtension(objectPath, null, 0, identity)).Save(archive);
         return [new ExportFile("uemodel", archive.GetBuffer())];
     }
 
@@ -157,10 +152,23 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
         string meshKind,
         int sourceMaterialCount,
         int requiredSectionCount,
+        bool lodMaterialTopologyCompatible,
         Func<FModelMaterialProjection> projectionFactory)
     {
         if (!policy.Enabled || policy.MaterialMode == FModelUeFormatMaterialMode.Disabled)
             return null;
+
+        if (!lodMaterialTopologyCompatible)
+        {
+            if (policy.RequiresCompleteMaterialProjection)
+                throw new InvalidOperationException(
+                    "Strict material projection requires every serialized LOD to use the same section material topology as LOD0.");
+            PublishFallback(
+                objectPath,
+                "material.lod-topology.incompatible",
+                $"V10 FModel material attributes were omitted for {meshKind} because a serialized LOD uses a different section material topology than LOD0.");
+            return null;
+        }
 
         var projection = projectionFactory();
         Publish(projection.Diagnostics);
@@ -188,7 +196,19 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
         return projection;
     }
 
+    private static bool HasCompatibleLodMaterialTopology(
+        IEnumerable<IReadOnlyList<int>> lodMaterialTopologies)
+    {
+        var topologies = lodMaterialTopologies.ToArray();
+        if (topologies.Length <= 1)
+            return true;
+
+        var expected = topologies[0];
+        return topologies.Skip(1).All(topology => topology.SequenceEqual(expected));
+    }
+
     private Action<FDataAttributeSet>? BuildExtension(
+        string objectPath,
         FModelMaterialProjection? projection,
         int sourceMaterialCount,
         FModelSkeletonIdentity? identity)
@@ -198,34 +218,39 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
 
         return root =>
         {
-            if (projection is not null)
-                attributeWriter.WriteProjection(root, projection, sourceMaterialCount);
-            if (identity is not null)
-                FModelSkeletonExtensionWriter.WriteModelIdentity(root, identity);
+            try
+            {
+                root.AddAttributes(staged =>
+                {
+                    if (projection is not null)
+                        attributeWriter.WriteProjection(staged, projection, sourceMaterialCount);
+                    if (identity is not null)
+                        FModelSkeletonExtensionWriter.WriteModelIdentity(staged, identity);
+                });
+            }
+            catch (Exception error) when (IsLinkedExtensionFailure(error))
+            {
+                PublishFallback(
+                    objectPath,
+                    "extension.serialization.failed",
+                    $"Linked FModel UEFormat attributes were omitted because extension serialization failed ({error.GetType().Name}); standard UEFormat output was preserved.");
+            }
         };
     }
 
+    private bool IsLinkedExtensionFailure(Exception error) =>
+        policy.MaterialMode == FModelUeFormatMaterialMode.Linked
+        && error is not OutOfMemoryException
+        && error is not StackOverflowException
+        && error is not AccessViolationException
+        && error is not OperationCanceledException;
+
     private IReadOnlyList<ExportFile> SaveModel(
-        Func<UEModel> extendedFactory,
-        Func<UEModel> standardFallbackFactory,
-        string objectPath)
+        Func<UEModel> extendedFactory)
     {
-        try
-        {
-            using var archive = new FArchiveWriter();
-            extendedFactory().Save(archive);
-            return [new ExportFile("uemodel", archive.GetBuffer())];
-        }
-        catch when (!policy.RequiresCompleteMaterialProjection)
-        {
-            PublishFallback(
-                objectPath,
-                "material.extension.fallback",
-                "V10 FModel material attribute validation failed; standard UEFormat output was preserved.");
-            using var archive = new FArchiveWriter();
-            standardFallbackFactory().Save(archive);
-            return [new ExportFile("uemodel", archive.GetBuffer())];
-        }
+        using var archive = new FArchiveWriter();
+        extendedFactory().Save(archive);
+        return [new ExportFile("uemodel", archive.GetBuffer())];
     }
 
     private BoundContext CreateBoundContext(string objectPath)
