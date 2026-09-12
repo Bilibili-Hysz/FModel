@@ -348,8 +348,15 @@ static Dictionary<string, (int Count, byte[] Payload)> ReadV10Attributes(byte[] 
     {
         var name = ReadFString(reader);
         var length = reader.ReadInt32();
-        if (length < 5 || length > stream.Length - stream.Position)
+        if (length < 0 || length > stream.Length - stream.Position)
             throw new InvalidDataException("Invalid V10 attribute length.");
+        if (!name.StartsWith("FMODEL_", StringComparison.Ordinal))
+        {
+            // Standard attributes (e.g. the LODS placeholder) mix into the same root
+            // set; skip their payload without applying the FModel envelope checks.
+            reader.ReadBytes(length);
+            continue;
+        }
         var envelopeVersion = reader.ReadByte();
         var arraySize = reader.ReadInt32();
         if (envelopeVersion != 1 || arraySize < 0 || !result.TryAdd(name, (arraySize, reader.ReadBytes(length - 5))))
