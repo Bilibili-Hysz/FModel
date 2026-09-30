@@ -17,6 +17,8 @@ using CUE4Parse_Conversion.Writers.UEFormat.Structs;
 using CUE4Parse.UE4.Assets.Exports;
 using CUE4Parse_Conversion.Formats.Meshes;
 
+PrimaryTextureSelectionChecks.Run();
+
 var projection = new FModelMaterialProjection(
     "/Game/SM_Test.SM_Test",
     [new FModelMaterialLinkProjection(0, 0, "Body", "CodeWorld/Content/M_Body.M_Body", "materials/body.json")],

@@ -18,6 +18,24 @@ namespace CUE4Parse.FModelUEFormat.ExportPipeline.Materials;
 /// </summary>
 public sealed class FModelMaterialProjectionBuilder
 {
+    // Pre-normalize upstream primary-name lists once, not for every texture in
+    // a bulk export. List order remains the official USD preference order.
+    private static readonly IReadOnlyDictionary<PbrMapKind, Dictionary<string, int>> PrimaryNameRanks =
+        new Dictionary<PbrMapKind, Dictionary<string, int>>
+        {
+            [PbrMapKind.BaseColor] = CreatePrimaryNameRanks(CMaterialParams2.Diffuse[0]),
+            [PbrMapKind.Normal] = CreatePrimaryNameRanks(CMaterialParams2.Normals[0]),
+            [PbrMapKind.Orm] = CreatePrimaryNameRanks(CMaterialParams2.SpecularMasks[0])
+        };
+
+    private static Dictionary<string, int> CreatePrimaryNameRanks(IEnumerable<string> names)
+    {
+        var ranks = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var name in names)
+            ranks.TryAdd(NormalizeParameter(name), ranks.Count);
+        return ranks;
+    }
+
     public FModelMaterialProjection Build(
         string objectPath,
         int sourceMaterialCount,
@@ -388,36 +406,50 @@ public sealed class FModelMaterialProjectionBuilder
                     ExportMetadataAvailable = metadataAvailable,
                     MapKind = TryClassifyMap(parameterIdentity, sourceTexture, out var kind) ? kind : null,
                     IsSrgb = sourceTexture is UTexture texture2 && texture2.SRGB,
-                    SourceTextureIsNormalMap = sourceTexture is UTexture texture3 && texture3.IsNormalMap
+                    SourceTextureIsNormalMap = sourceTexture is UTexture texture3 && texture3.IsNormalMap,
+                    SourceTextureIsCubeMap = IsCubeMap(sourceTexture)
                 };
             }
         }
     }
 
     /// <summary>
-    /// CMaterialParams2 exposes both the canonical PM_* fallback entries and a
-    /// potentially large set of implementation-specific texture parameters. The
-    /// UEFormat wire contract supports one binding per PBR map kind, so emitting
-    /// every recognized parameter can create conflicting BaseColor/Normal/Orm
-    /// bindings and cause the complete extension to be discarded. Keep one
-    /// deterministic primary candidate for each supported map kind, preferring
-    /// CMaterialParams2's canonical fallback aliases.
+    /// Prefer named primary parameters (as official USD does) over PM_* aliases.
+    /// VerifyTexture overwrites those aliases while traversing parameters, so an
+    /// alias can point at an overlay, detail normal or reflection rather than the
+    /// primary surface texture. The frozen wire format still has one map per kind;
+    /// this selects that map without pretending to reproduce a material graph.
     /// </summary>
     private static IReadOnlyList<FModelTextureInput> SelectPrimaryPbrTextures(
         IReadOnlyList<FModelTextureInput> candidates)
     {
         ArgumentNullException.ThrowIfNull(candidates);
 
-        var selected = candidates
+        var auxiliarySources = candidates
+            .Where(input => LooksAuxiliaryPbrParameter(input.ParameterIdentity))
+            .Select(input => input.SourceIdentity)
+            .Where(identity => !string.IsNullOrWhiteSpace(identity))
+            .ToHashSet(StringComparer.Ordinal);
+        var eligible = candidates
+            .Where(input => !input.SourceTextureIsCubeMap
+                && !LooksAuxiliaryPbrParameter(input.ParameterIdentity)
+                // Do not reintroduce a rejected auxiliary via its PM_* or asset-name
+                // alias. An explicit primary parameter using the same image remains
+                // eligible: sharing pixels does not make that parameter auxiliary.
+                && !(auxiliarySources.Contains(input.SourceIdentity)
+                    && (IsFallbackParameter(input.ParameterIdentity)
+                        || IsAssetNameParameter(input))))
+            .ToArray();
+
+        var selected = eligible
             .Where(input => input.MapKind is not null)
             .GroupBy(input => input.MapKind!.Value)
             .Select(group => group
-                // Prefer a successfully previewed output, but retain one failed
-                // candidate when every preview failed. Dropping failed candidates
-                // here bypasses Build()'s texture.export.metadata diagnostic and
-                // incorrectly lets Strict mode serialize a material-only success.
-                .OrderBy(input => input.Outputs is { Count: > 0 } ? 0 : 1)
-                .ThenBy(input => TexturePriority(input, group.Key))
+                // Semantic identity wins over output availability. If the primary
+                // export fails, retain it so Build() emits the Linked/Strict metadata
+                // diagnostic; silently using a working overlay is not a repair.
+                .OrderBy(input => TexturePriority(input, group.Key))
+                .ThenBy(input => input.Outputs is { Count: > 0 } ? 0 : 1)
                 .ThenBy(input => input.ParameterIdentity, StringComparer.Ordinal)
                 .ThenBy(input => input.SourceIdentity, StringComparer.Ordinal)
                 .First())
@@ -425,20 +457,25 @@ public sealed class FModelMaterialProjectionBuilder
 
         if (selected.All(input => input.MapKind != PbrMapKind.BaseColor))
         {
-            var fallback = candidates
+            var fallbacks = eligible
                 .Where(input => input.MapKind is null
+                    && !input.SourceTextureIsNormalMap
                     && !LooksClearlyNonBaseColor(input.ParameterIdentity))
-                .OrderBy(input => input.Outputs is { Count: > 0 } ? 0 : 1)
-                .ThenBy(input => TexturePriority(input, PbrMapKind.BaseColor))
-                .ThenBy(input => input.ParameterIdentity, StringComparer.Ordinal)
-                .ThenBy(input => input.SourceIdentity, StringComparer.Ordinal)
-                .FirstOrDefault();
-            if (fallback is not null)
+                .GroupBy(input => input.SourceIdentity, StringComparer.Ordinal)
+                .Select(group => group
+                    .OrderBy(input => input.Outputs is { Count: > 0 } ? 0 : 1)
+                    .ThenBy(input => input.ParameterIdentity, StringComparer.Ordinal)
+                    .First())
+                .ToArray();
+            // A sole unknown texture is a useful compatibility fallback. Several
+            // unrelated unknown textures are not evidence of a BaseColor; never
+            // promote the first alphabetical entry (noise/masks/auxiliary data).
+            if (fallbacks.Length == 1)
             {
-                selected.Add(fallback with
+                selected.Add(fallbacks[0] with
                 {
                     MapKind = PbrMapKind.BaseColor,
-                    IsSrgb = fallback.IsSrgb ?? true
+                    IsSrgb = fallbacks[0].IsSrgb ?? true
                 });
             }
         }
@@ -452,11 +489,66 @@ public sealed class FModelMaterialProjectionBuilder
     private static int TexturePriority(FModelTextureInput input, PbrMapKind mapKind)
     {
         var normalized = NormalizeParameter(input.ParameterIdentity ?? string.Empty);
-        if (mapKind == PbrMapKind.BaseColor && normalized == "pmdiffuse") return 0;
-        if (mapKind == PbrMapKind.Normal && normalized == "pmnormals") return 0;
-        if (mapKind == PbrMapKind.Orm && normalized == "pmspecularmasks") return 0;
-        if (input.SourceTextureIsNormalMap && mapKind == PbrMapKind.Normal) return 1;
-        return 10;
+        var ranks = PrimaryNameRanks[mapKind];
+        if (ranks.TryGetValue(normalized, out var rank))
+            return rank;
+        // Semantic parameter names absent from upstream's list still outrank a
+        // lossy alias. Pure asset-name aliases are weaker than named parameters.
+        if (IsFallbackParameter(input.ParameterIdentity)) return ranks.Count + 2;
+        return ranks.Count + (IsAssetNameParameter(input) ? 1 : 0);
+    }
+
+    // UTextureCube/Array currently inherit the base IsTextureCube == false, so
+    // the runtime type check is required in addition to the virtual capability.
+    private static bool IsCubeMap(UUnrealMaterial texture) =>
+        texture is UTextureCube or UTextureCubeArray || texture.IsTextureCube;
+
+    private static bool IsFallbackParameter(string? name) =>
+        NormalizeParameter(name ?? string.Empty) is
+            "pmdiffuse" or "pmnormals" or "pmspecularmasks" or "pmemissive";
+
+    private static bool IsAssetNameParameter(FModelTextureInput input)
+    {
+        var identity = input.SourceIdentity ?? string.Empty;
+        var leaf = identity[(identity.LastIndexOf('/') + 1)..];
+        var dot = leaf.IndexOf('.');
+        if (dot >= 0) leaf = leaf[..dot];
+        return string.Equals(input.ParameterIdentity, leaf, StringComparison.Ordinal);
+    }
+
+    private static bool LooksAuxiliaryPbrParameter(string? name)
+    {
+        var normalized = NormalizeParameter(name ?? string.Empty);
+        // Some games use a detail-looking name for their actual primary map
+        // (for example the upstream-listed PetalDetailMap). Honor that explicit
+        // upstream classification rather than applying the auxiliary heuristic.
+        if (PrimaryNameRanks.Values.Any(ranks => ranks.ContainsKey(normalized)))
+            return false;
+        return normalized.Contains("detail", StringComparison.Ordinal)
+            || normalized.Contains("overlay", StringComparison.Ordinal)
+            || normalized.Contains("wrinkle", StringComparison.Ordinal)
+            || normalized.Contains("expression", StringComparison.Ordinal)
+            || normalized.Contains("reflection", StringComparison.Ordinal)
+            || normalized.Contains("cubemap", StringComparison.Ordinal)
+            || normalized.Contains("matcap", StringComparison.Ordinal)
+            || normalized.Contains("noise", StringComparison.Ordinal)
+            || normalized.Contains("support", StringComparison.Ordinal)
+            || normalized.Contains("exclusion", StringComparison.Ordinal)
+            || normalized.Contains("scalp", StringComparison.Ordinal)
+            || normalized.Contains("subsurface", StringComparison.Ordinal)
+            || normalized.Contains("specularcolor", StringComparison.Ordinal)
+            || normalized.Contains("specularcolour", StringComparison.Ordinal)
+            || normalized.Contains("emiss", StringComparison.Ordinal)
+            || normalized.Contains("opacity", StringComparison.Ordinal)
+            || normalized.Contains("transmission", StringComparison.Ordinal)
+            || normalized.Contains("translucency", StringComparison.Ordinal)
+            || normalized.Contains("height", StringComparison.Ordinal)
+            || normalized.Contains("displacement", StringComparison.Ordinal)
+            || normalized.Contains("lightmap", StringComparison.Ordinal)
+            || normalized.Contains("shadowcolor", StringComparison.Ordinal)
+            || normalized.Contains("shadowcolour", StringComparison.Ordinal)
+            || normalized.StartsWith("rimcolor", StringComparison.Ordinal)
+            || normalized.StartsWith("rimcolour", StringComparison.Ordinal);
     }
 
     private static bool LooksClearlyNonBaseColor(string? parameterIdentity)
@@ -516,6 +608,23 @@ public sealed class FModelMaterialProjectionBuilder
         if (string.IsNullOrWhiteSpace(parameterIdentity))
             return false;
         var normalized = NormalizeParameter(parameterIdentity);
+        // Named primary parameters must be classified themselves, not only via
+        // the PM_* fallback created by upstream's lossy VerifyTexture pass.
+        if (PrimaryNameRanks[PbrMapKind.Normal].ContainsKey(normalized))
+        {
+            mapKind = PbrMapKind.Normal;
+            return true;
+        }
+        if (PrimaryNameRanks[PbrMapKind.Orm].ContainsKey(normalized))
+        {
+            mapKind = PbrMapKind.Orm;
+            return true;
+        }
+        if (PrimaryNameRanks[PbrMapKind.BaseColor].ContainsKey(normalized))
+        {
+            mapKind = PbrMapKind.BaseColor;
+            return true;
+        }
         if (normalized.Contains("normal", StringComparison.Ordinal) || normalized is "n" or "nm" or "nrm" or "pmnormals")
         {
             mapKind = PbrMapKind.Normal;
@@ -612,4 +721,6 @@ public sealed record FModelTextureInput(
     public PbrMapKind? MapKind { get; init; }
     public bool? IsSrgb { get; init; }
     public bool SourceTextureIsNormalMap { get; init; }
+    // Selection-only metadata; never serialized into the frozen FMODEL_* wire.
+    public bool SourceTextureIsCubeMap { get; init; }
 }
