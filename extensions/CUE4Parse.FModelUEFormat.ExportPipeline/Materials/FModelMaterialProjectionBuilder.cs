@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Diagnostics;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Pipeline;
+using CUE4Parse.UE4.Assets;
 using CUE4Parse.UE4.Assets.Exports.Material;
+using CUE4Parse.UE4.Objects.UObject;
 using CUE4Parse.UE4.Assets.Exports.Texture;
 using CUE4Parse.UeFormat.UEModel;
 using CUE4Parse_Conversion.Dto;
@@ -354,11 +356,8 @@ public sealed class FModelMaterialProjectionBuilder
                 return new FModelMaterialSlotInput(sourceMaterialIndex, sourceMaterialIndex, slotName, material.GetPathName(), null, Array.Empty<FModelTextureInput>());
             }
 
-            var textureInputs = SelectPrimaryPbrTextures(
-                parameters.Textures
-                    .OrderBy(pair => pair.Key, StringComparer.Ordinal)
-                    .Select(pair => BuildTextureInput(pair.Key, pair.Value))
-                    .ToArray());
+            var textureInputs = BuildPrimaryTextureInputs(
+                parameters.Textures, options, policy, texturePreview, ownerModelUri);
             string? materialJsonUri = null;
             try
             {
@@ -377,39 +376,102 @@ public sealed class FModelMaterialProjectionBuilder
                 materialJsonUri,
                 textureInputs);
 
-            FModelTextureInput BuildTextureInput(string parameterIdentity, UUnrealMaterial sourceTexture)
+
+        }
+    }
+
+    // Resolve lazy references inside the UEFormat projection only. Candidate
+    // metadata is separate from encoded output: select first, then preview only
+    // the chosen main maps. Never let output availability choose another source.
+    private static IReadOnlyList<FModelTextureInput> BuildPrimaryTextureInputs(
+        IReadOnlyDictionary<string, ILoadableObject> references,
+        ExportOptions options,
+        FModelUeFormatPolicy policy,
+        FModelTextureExportPreview? texturePreview,
+        string? ownerModelUri)
+    {
+        var loaded = new Dictionary<ILoadableObject, UTexture?>(ReferenceEqualityComparer.Instance);
+        var texturesByParameter = new Dictionary<string, UTexture>(StringComparer.Ordinal);
+        var candidates = references.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => BuildCandidate(pair.Key, pair.Value)).ToArray();
+        return SelectPrimaryPbrTextures(candidates).Select(ProjectSelected).ToArray();
+
+        FModelTextureInput BuildCandidate(string parameter, ILoadableObject reference)
+        {
+            string identity;
+            try
             {
-                IReadOnlyList<FModelTextureOutputProjection>? outputs = null;
-                bool? metadataAvailable = null;
-                if (texturePreview is not null && sourceTexture is UTexture texture)
+                identity = reference switch
                 {
-                    metadataAvailable = texturePreview.TryProject(texture, out var projected);
-                    outputs = projected;
-                }
-
-                string? textureUri = outputs?.FirstOrDefault()?.LogicalResourceUri;
-                if (textureUri is null)
-                {
-                    try
-                    {
-                        textureUri = FModelMaterialUriResolver.ResolveTextureUri(sourceTexture, options, policy.ResourceUriRoot, ownerModelUri);
-                    }
-                    catch (ArgumentException)
-                    {
-                        // The projection pass records an invalid URI without exposing source paths.
-                    }
-                }
-
-                return new FModelTextureInput(parameterIdentity, sourceTexture.GetPathName(), textureUri)
-                {
-                    Outputs = outputs,
-                    ExportMetadataAvailable = metadataAvailable,
-                    MapKind = TryClassifyMap(parameterIdentity, sourceTexture, out var kind) ? kind : null,
-                    IsSrgb = sourceTexture is UTexture texture2 && texture2.SRGB,
-                    SourceTextureIsNormalMap = sourceTexture is UTexture texture3 && texture3.IsNormalMap,
-                    SourceTextureIsCubeMap = IsCubeMap(sourceTexture)
+                    ResolvedObject resolved => resolved.GetPathName(),
+                    FPackageIndex index => index.ResolvedObject?.GetPathName() ?? string.Empty,
+                    FSoftObjectPath soft => soft.AssetPathName.Text,
+                    _ => string.Empty
                 };
             }
+            catch (OperationCanceledException) { throw; }
+            catch { identity = string.Empty; }
+
+            UTexture? texture = null;
+            // Auxiliary identities still participate in alias rejection, but
+            // their bulk texture data need not be loaded by this projection.
+            if (!LooksAuxiliaryPbrParameter(parameter))
+            {
+                if (!loaded.TryGetValue(reference, out texture))
+                {
+                    try { reference.TryLoad<UTexture>(out texture); }
+                    catch (OperationCanceledException) { throw; }
+                    catch { texture = null; }
+                    loaded.Add(reference, texture);
+                }
+                if (texture is not null)
+                {
+                    identity = texture.GetPathName();
+                    texturesByParameter.Add(parameter, texture);
+                }
+            }
+            var classified = texture is null
+                ? TryClassifyMap(parameter, out var kind)
+                : TryClassifyMap(parameter, texture, out kind);
+            return new FModelTextureInput(parameter, identity, null)
+            {
+                MapKind = classified ? kind : null,
+                IsSrgb = texture?.SRGB,
+                SourceTextureIsNormalMap = texture?.IsNormalMap == true,
+                SourceTextureIsCubeMap = texture is not null && IsCubeMap(texture),
+                // Unresolved primaries remain selected and generate Linked/Strict
+                // diagnostics; do not silently drop them or promote another map.
+                ExportMetadataAvailable = false
+            };
+        }
+
+        FModelTextureInput ProjectSelected(FModelTextureInput input)
+        {
+            if (!texturesByParameter.TryGetValue(input.ParameterIdentity!, out var texture))
+                return input;
+            IReadOnlyList<FModelTextureOutputProjection>? outputs = null;
+            bool? metadataAvailable = null;
+            if (texturePreview is not null)
+            {
+                metadataAvailable = texturePreview.TryProject(texture, out var projected);
+                outputs = projected;
+            }
+            string? textureUri = outputs?.FirstOrDefault()?.LogicalResourceUri;
+            if (textureUri is null)
+            {
+                try
+                {
+                    textureUri = FModelMaterialUriResolver.ResolveTextureUri(
+                        texture, options, policy.ResourceUriRoot, ownerModelUri);
+                }
+                catch (ArgumentException) { /* Build() reports the invalid URI. */ }
+            }
+            return input with
+            {
+                TextureUri = textureUri,
+                Outputs = outputs,
+                ExportMetadataAvailable = metadataAvailable
+            };
         }
     }
 

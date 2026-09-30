@@ -64,7 +64,8 @@ internal sealed class FModelV3ExportSessionExtension : IExportSessionExtension
 
         if (format != EMeshFormat.UEFormat || !FModelV3ExporterFactory.IsEnabled)
             return null;
-        if (!export.Skeleton.TryLoad<USkeleton>(out var skeleton) || skeleton is null)
+        if (export.Skeleton is not { } skeletonReference ||
+            !skeletonReference.TryLoad<USkeleton>(out var skeleton) || skeleton is null)
         {
             ReportMissingSkeleton(export.GetPathName(), "animation");
             // Returning null is part of the extension contract: the official
@@ -88,7 +89,8 @@ internal sealed class FModelV3ExportSessionExtension : IExportSessionExtension
 
         if (format != EMeshFormat.UEFormat || !FModelV3ExporterFactory.IsEnabled)
             return null;
-        if (!export.Skeleton.TryLoad<USkeleton>(out var skeleton) || skeleton is null)
+        if (export.Skeleton is not { } skeletonReference ||
+            !skeletonReference.TryLoad<USkeleton>(out var skeleton) || skeleton is null)
         {
             ReportMissingSkeleton(export.GetPathName(), "pose asset");
             // Returning null preserves the official standard-only UEFormat
