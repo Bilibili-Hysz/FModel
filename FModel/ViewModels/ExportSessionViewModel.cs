@@ -317,15 +317,7 @@ public class ExportSessionViewModel : ViewModel
                 exportOptions.MeshFormat == EMeshFormat.UEFormat, Session.OperationId, cts.Token);
             if (exportOptions.MeshFormat == EMeshFormat.UEFormat)
             {
-                Application.Current?.Dispatcher.InvokeAsync(() =>
-                {
-                    if (!IsCurrentProgressGeneration(progressGeneration)) return;
-                    CompletedCount = results.Count;
-                    SucceededCount = results.Count(static result => result.Success);
-                    FailedCount = results.Count - SucceededCount;
-                    ProgressValue = results.Count > 0 ? 1 : 0;
-                    CurrentItemName = results.LastOrDefault()?.ObjectPath;
-                });
+                SetUeFormatTerminalProgress(results, progressGeneration);
             }
         }
         catch (OperationCanceledException)
@@ -541,6 +533,21 @@ public class ExportSessionViewModel : ViewModel
         {
             return generation == _progressGeneration;
         }
+    }
+
+    // Publish effective UEFormat terminal results into the same snapshot read by
+    // Background drains. Updating only public UI counts allowed an older queued
+    // drain to restore raw root-success counts after required-texture failure.
+    private void SetUeFormatTerminalProgress(IReadOnlyList<ExportResult> results, long generation)
+    {
+        lock (_progressLock)
+        {
+            if (!IsCurrentProgressGeneration(generation)) return;
+            _latestProgress = new ExportProgress(results.Count, results.Count, results.LastOrDefault());
+            _progressSucceededCount = results.Count(static result => result.Success);
+            _progressFailedCount = results.Count - _progressSucceededCount;
+        }
+        ScheduleProgressDrain();
     }
 
     private void QueueProgress(ExportProgress progress, long generation)
