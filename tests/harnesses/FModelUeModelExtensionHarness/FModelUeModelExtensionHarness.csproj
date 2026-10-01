@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../../FModel/Services/FModelV3ExportDelivery.cs" Link="FModelV3ExportDelivery.cs" />
     <ProjectReference Include="../../../extensions/CUE4Parse.FModelUEFormat.ExportPipeline/CUE4Parse.FModelUEFormat.ExportPipeline.csproj" />
   </ItemGroup>
 </Project>

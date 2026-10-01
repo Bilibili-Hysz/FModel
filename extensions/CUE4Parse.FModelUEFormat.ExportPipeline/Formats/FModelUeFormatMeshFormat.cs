@@ -1,4 +1,5 @@
 using CUE4Parse.FModelUEFormat.ExportPipeline.Diagnostics;
+using CUE4Parse.FModelUEFormat.ExportPipeline.Delivery;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Materials;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Pipeline;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Writers;
@@ -24,6 +25,7 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
 {
     private readonly FModelUeFormatPolicy policy;
     private readonly Action<FModelUeFormatPipelineDiagnostic>? diagnosticSink;
+    private readonly Action<FModelUeFormatDeliveryDeclaration>? deliverySink;
     private readonly ExportSession? session;
     private readonly UObject? sourceObject;
     private readonly FModelMaterialProjectionBuilder projectionBuilder = new();
@@ -41,11 +43,13 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
         FModelUeFormatPolicy policy,
         ExportSession session,
         UObject sourceObject,
-        Action<FModelUeFormatPipelineDiagnostic>? diagnosticSink = null)
+        Action<FModelUeFormatPipelineDiagnostic>? diagnosticSink = null,
+        Action<FModelUeFormatDeliveryDeclaration>? deliverySink = null)
         : this(policy, diagnosticSink)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
         this.sourceObject = sourceObject ?? throw new ArgumentNullException(nameof(sourceObject));
+        this.deliverySink = deliverySink;
     }
 
     public string DisplayName => "UEFormat (V10 FModel adapter)";
@@ -84,7 +88,7 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
                 context.ObjectPath,
                 dto,
                 options,
-                extensionBuilder: BuildExtension(context.ObjectPath, projection, dto.Materials.Length, null)));
+                extensionBuilder: BuildExtension(context.ObjectPath, projection, dto.Materials.Length, null, objectPath, context.OwnerModelUri)));
     }
 
     public IReadOnlyList<ExportFile> BuildSkeletalMesh(
@@ -122,7 +126,7 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
                 context.ObjectPath,
                 dto,
                 options,
-                extensionBuilder: BuildExtension(context.ObjectPath, projection, dto.Materials.Length, identity)));
+                extensionBuilder: BuildExtension(context.ObjectPath, projection, dto.Materials.Length, identity, objectPath, context.OwnerModelUri)));
     }
 
     public IReadOnlyList<ExportFile> BuildSkeleton(
@@ -211,7 +215,9 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
         string objectPath,
         FModelMaterialProjection? projection,
         int sourceMaterialCount,
-        FModelSkeletonIdentity? identity)
+        FModelSkeletonIdentity? identity,
+        string? exporterObjectPath = null,
+        string? ownerModelUri = null)
     {
         if (projection is null && identity is null)
             return null;
@@ -234,6 +240,17 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
                     objectPath,
                     "extension.serialization.failed",
                     $"Linked FModel UEFormat attributes were omitted because extension serialization failed ({error.GetType().Name}); standard UEFormat output was preserved.");
+                return;
+            }
+            // Register only what the attribute writer actually accepted. A Linked
+            // fallback must never create requirements for omitted attributes.
+            if (deliverySink is not null && projection is { Textures.Count: > 0, TextureResources.Count: > 0 })
+            {
+                if (exporterObjectPath is null || ownerModelUri is null)
+                    throw new InvalidOperationException("Required-resource delivery needs a session-bound owner path.");
+                deliverySink(new FModelUeFormatDeliveryDeclaration(
+                    exporterObjectPath, ownerModelUri,
+                    projection.TextureResources.Select(resource => resource with { Sha256 = resource.Sha256.ToArray() }).ToArray()));
             }
         };
     }

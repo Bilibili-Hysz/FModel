@@ -311,6 +311,10 @@ public class ExportSessionViewModel : ViewModel
         try
         {
             results = await Session.RunAsync(exportDirectory, exportOptions, progress, cts.Token).ConfigureAwait(false);
+            // The additive UEFormat layer verifies only its declared resources
+            // before terminal UI counts/automatic summaries consume the results.
+            results = FModel.Services.FModelV3ExportFeedback.Report(results, exportDirectory,
+                exportOptions.MeshFormat == EMeshFormat.UEFormat, Session.OperationId, cts.Token);
             if (exportOptions.MeshFormat == EMeshFormat.UEFormat)
             {
                 Application.Current?.Dispatcher.InvokeAsync(() =>
@@ -323,7 +327,6 @@ public class ExportSessionViewModel : ViewModel
                     CurrentItemName = results.LastOrDefault()?.ObjectPath;
                 });
             }
-            FModel.Services.FModelV3ExportFeedback.Report(results, exportDirectory, exportOptions.MeshFormat == EMeshFormat.UEFormat, Session.OperationId);
         }
         catch (OperationCanceledException)
         {

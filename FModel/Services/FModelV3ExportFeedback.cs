@@ -3,6 +3,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
+using CUE4Parse.FModelUEFormat.ExportPipeline.Delivery;
 using CUE4Parse_Conversion;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Pipeline;
 using FModel.Framework;
@@ -161,15 +163,28 @@ internal static class FModelV3ExportFeedback
                 true));
     }
 
-    internal static void Report(IReadOnlyList<ExportResult> results, string exportDirectory, bool isUeFormatSession,
-        string operationId)
+    internal static IReadOnlyList<ExportResult> Report(IReadOnlyList<ExportResult> results, string exportDirectory, bool isUeFormatSession,
+        string operationId, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(results);
         ArgumentException.ThrowIfNullOrWhiteSpace(operationId);
         if (!isUeFormatSession)
         {
             FModelV3ExporterFactory.ClearPending(operationId);
-            return;
+            return results;
+        }
+
+        FModelUeFormatDeliveryValidation delivery;
+        try
+        {
+            delivery = FModelUeFormatDeliveryVerifier.Validate(results, exportDirectory,
+                FModelV3ExportDelivery.Take(operationId), cancellationToken);
+            results = delivery.Results;
+        }
+        catch
+        {
+            FModelV3ExporterFactory.ClearPending(operationId);
+            throw;
         }
 
         // Consume ownership markers in one pass. The previous implementation built
@@ -185,7 +200,8 @@ internal static class FModelV3ExportFeedback
         var firstFailures = new List<(string ObjectPath, string Message)>(capacity: 5);
         foreach (var result in results)
         {
-            if (!FModelV3ExporterFactory.TryTakeOwnedResult(operationId, result.ObjectPath))
+            if (!FModelV3ExporterFactory.TryTakeOwnedResult(operationId, result.ObjectPath)
+                && !delivery.DeclaredRoots.Contains(result.ObjectPath))
             {
                 if (!result.Success) otherFailedCount++;
                 continue;
@@ -217,18 +233,18 @@ internal static class FModelV3ExportFeedback
         FModelV3ExporterFactory.ClearPending(operationId);
 
         if (ownedCount == 0)
-            return;
+            return results;
 
         var linkTarget = modelFile ?? (Directory.Exists(exportDirectory) ? exportDirectory : null);
         var succeeded = failedOwnedCount == 0;
 
         if (FLogger.Logger is null)
-            return;
+            return results;
 
         FLogger.Append(succeeded ? ELog.Information : ELog.Error, () =>
         {
             var message = succeeded
-                ? $"Operation {operationId}: UEFormat V3 export completed: {ownedCount} model(s), {diskFiles.Count} file(s) written"
+                ? $"Operation {operationId}: UEFormat V3 export completed: {ownedCount} model(s), {diskFiles.Count} file(s) written; required textures verified: {delivery.VerifiedTextureFileCount}"
                 : $"Operation {operationId}: UEFormat V3 export completed with errors: {ownedCount - failedOwnedCount}/{ownedCount} model(s) succeeded";
             FLogger.Text(message, FModel.Constants.WHITE);
             if (!string.IsNullOrWhiteSpace(linkTarget))
@@ -256,6 +272,7 @@ internal static class FModelV3ExportFeedback
                     FModel.Constants.WHITE,
                     true));
         }
+        return results;
     }
 
     internal static void ReportCanceled(string operationId)

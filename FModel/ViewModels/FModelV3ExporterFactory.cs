@@ -66,6 +66,7 @@ internal static class FModelV3ExporterFactory
 
     internal static bool ClearPending(string operationId)
     {
+        FModelV3ExportDelivery.Clear(operationId);
         return !string.IsNullOrWhiteSpace(operationId)
             && PendingOwnedObjectPaths.TryRemove(operationId, out var ownedPaths)
             && !ownedPaths.IsEmpty;

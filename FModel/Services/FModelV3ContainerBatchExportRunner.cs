@@ -90,7 +90,7 @@ internal static class FModelV3ContainerBatchExportRunner
                 FModelV3ExportFeedback.ReportContainerStarted(entry.ContainerName, destinationDirectory, entry.PackagePaths.Count);
 
                 var packageFailures = new List<FModelV3ContainerPackageFailure>();
-                var results = Array.Empty<ExportResult>();
+                IReadOnlyList<ExportResult> results = Array.Empty<ExportResult>();
                 ExportSession? session = null;
 
                 try
@@ -151,7 +151,7 @@ internal static class FModelV3ContainerBatchExportRunner
 
                         try
                         {
-                            results = (await runTask.ConfigureAwait(false)).ToArray();
+                            results = await runTask.ConfigureAwait(false);
                         }
                         catch when (productionFailure is not null)
                         {
@@ -162,7 +162,7 @@ internal static class FModelV3ContainerBatchExportRunner
                         productionFailure?.Throw();
                     }
 
-                    FModelV3ExportFeedback.Report(results, destinationDirectory, effectiveV3Enabled, session.OperationId);
+                    results = FModelV3ExportFeedback.Report(results, destinationDirectory, effectiveV3Enabled, session.OperationId, cancellationToken);
                     var failedResultCount = results.Count(static result => !result.Success);
                     var summary = new FModelV3ContainerRunSummary(
                         entry.ContainerPath,
@@ -170,7 +170,7 @@ internal static class FModelV3ContainerBatchExportRunner
                         destinationDirectory,
                         entry.PackagePaths.Count,
                         packageFailures.Count,
-                        results.Length,
+                        results.Count,
                         failedResultCount,
                         packageFailures);
                     summaries.Add(summary);
@@ -199,7 +199,7 @@ internal static class FModelV3ContainerBatchExportRunner
                         destinationDirectory,
                         entry.PackagePaths.Count,
                         packageFailures.Count,
-                        results.Length,
+                        results.Count,
                         results.Count(static result => !result.Success),
                         packageFailures,
                         error.Message));

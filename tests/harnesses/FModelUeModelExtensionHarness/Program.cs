@@ -19,6 +19,8 @@ using CUE4Parse_Conversion.Formats.Meshes;
 
 PrimaryTextureSelectionChecks.Run();
 LazyTextureReferenceChecks.Run();
+await TextureDeliveryBoundaryChecks.RunAsync();
+TerminalDeliveryChecks.Run();
 
 var projection = new FModelMaterialProjection(
     "/Game/SM_Test.SM_Test",

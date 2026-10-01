@@ -20,8 +20,20 @@ namespace CUE4Parse.FModelUEFormat.ExportPipeline.Materials;
 /// </summary>
 public sealed class FModelMaterialProjectionBuilder
 {
-    // Pre-normalize upstream primary-name lists once, not for every texture in
-    // a bulk export. List order remains the official USD preference order.
+    // Preserve the preview/USD exact-name order before accepting normalized
+    // aliases. Collapsing "Base Color", "Base_Color" and "BaseColor" first can
+    // incorrectly promote a later name ahead of Diffuse; case variants also
+    // have distinct positions in the upstream case-sensitive dictionary.
+    private static readonly IReadOnlyDictionary<PbrMapKind, Dictionary<string, int>> ExactPrimaryNameRanks =
+        new Dictionary<PbrMapKind, Dictionary<string, int>>
+        {
+            [PbrMapKind.BaseColor] = CreateExactPrimaryNameRanks(CMaterialParams2.Diffuse[0]),
+            [PbrMapKind.Normal] = CreateExactPrimaryNameRanks(CMaterialParams2.Normals[0]),
+            [PbrMapKind.Orm] = CreateExactPrimaryNameRanks(CMaterialParams2.SpecularMasks[0])
+        };
+
+    // Pre-normalized names remain a weaker compatibility/classification layer.
+    // Both lookup tables are initialized once, not once per bulk-export candidate.
     private static readonly IReadOnlyDictionary<PbrMapKind, Dictionary<string, int>> PrimaryNameRanks =
         new Dictionary<PbrMapKind, Dictionary<string, int>>
         {
@@ -29,6 +41,14 @@ public sealed class FModelMaterialProjectionBuilder
             [PbrMapKind.Normal] = CreatePrimaryNameRanks(CMaterialParams2.Normals[0]),
             [PbrMapKind.Orm] = CreatePrimaryNameRanks(CMaterialParams2.SpecularMasks[0])
         };
+
+    private static Dictionary<string, int> CreateExactPrimaryNameRanks(IEnumerable<string> names)
+    {
+        var ranks = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var name in names)
+            ranks.TryAdd(name, ranks.Count);
+        return ranks;
+    }
 
     private static Dictionary<string, int> CreatePrimaryNameRanks(IEnumerable<string> names)
     {
@@ -309,13 +329,27 @@ public sealed class FModelMaterialProjectionBuilder
         }
 
         var slots = new List<FModelMaterialSlotInput>(referenceSections.Count);
+        // One DTO can contain many sections referring to the same source slot.
+        // Cache only this mesh's pure extraction; never retain UObject/texture
+        // buffers across meshes or sessions.
+        var resolvedSlots = new Dictionary<int, FModelMaterialSlotInput>();
         for (var sectionIndex = 0; sectionIndex < referenceSections.Count; sectionIndex++)
         {
             var sourceMaterialIndex = referenceSections[sectionIndex].MaterialIndex;
             var slotName = sourceMaterialIndex >= 0 && sourceMaterialIndex < materials.Count
                 ? materials[sourceMaterialIndex].SlotName
                 : $"MaterialSlot_{sectionIndex}";
-            var source = ResolveSourceMaterial(sourceMaterialIndex, slotName);
+            FModelMaterialSlotInput source;
+            if (sourceMaterialIndex >= 0 && sourceMaterialIndex < materials.Count)
+            {
+                if (!resolvedSlots.TryGetValue(sourceMaterialIndex, out source!))
+                    resolvedSlots[sourceMaterialIndex] = source = ResolveSourceMaterial(sourceMaterialIndex, slotName);
+            }
+            else
+            {
+                // Invalid slots retain their individual fallback names.
+                source = ResolveSourceMaterial(sourceMaterialIndex, slotName);
+            }
             slots.Add(source with
             {
                 SlotIndex = sectionIndex,
@@ -337,6 +371,10 @@ public sealed class FModelMaterialProjectionBuilder
             {
                 material = sourceSlot.Material?.Load<UMaterialInterface>();
             }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
             catch
             {
                 // The pure projection pass reports the missing identity/URI; runtime
@@ -350,6 +388,10 @@ public sealed class FModelMaterialProjectionBuilder
             try
             {
                 material.GetParams(parameters, options.MaterialDepth);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch
             {
@@ -550,14 +592,19 @@ public sealed class FModelMaterialProjectionBuilder
 
     private static int TexturePriority(FModelTextureInput input, PbrMapKind mapKind)
     {
-        var normalized = NormalizeParameter(input.ParameterIdentity ?? string.Empty);
+        var parameter = input.ParameterIdentity ?? string.Empty;
+        var exactRanks = ExactPrimaryNameRanks[mapKind];
+        if (exactRanks.TryGetValue(parameter, out var exactRank))
+            return exactRank;
+        var normalized = NormalizeParameter(parameter);
         var ranks = PrimaryNameRanks[mapKind];
         if (ranks.TryGetValue(normalized, out var rank))
-            return rank;
+            return exactRanks.Count + rank;
         // Semantic parameter names absent from upstream's list still outrank a
         // lossy alias. Pure asset-name aliases are weaker than named parameters.
-        if (IsFallbackParameter(input.ParameterIdentity)) return ranks.Count + 2;
-        return ranks.Count + (IsAssetNameParameter(input) ? 1 : 0);
+        var semanticRank = exactRanks.Count + ranks.Count;
+        if (IsFallbackParameter(parameter)) return semanticRank + 2;
+        return semanticRank + (IsAssetNameParameter(input) ? 1 : 0);
     }
 
     // UTextureCube/Array currently inherit the base IsTextureCube == false, so

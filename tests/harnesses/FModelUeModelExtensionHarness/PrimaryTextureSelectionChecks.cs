@@ -78,6 +78,18 @@ internal static class PrimaryTextureSelectionChecks
              Input("PM_Diffuse", "Auxiliary", PbrMapKind.BaseColor)]);
         AssertSelection("game-specific official primary name overrides generic auxiliary heuristic",
             [Input("PBREmissiveTex", "GameNormal", PbrMapKind.Normal)], "PBREmissiveTex");
+        // Mirror the previewer's exact CMaterialParams2.Diffuse[0] name order.
+        // Normalized spellings must not collapse distinct upstream priorities.
+        AssertSelection("exact upstream Diffuse before later BaseColor",
+            [Input("Diffuse", "Diffuse", PbrMapKind.BaseColor), primary], "Diffuse");
+        AssertSelection("exact lowercase albedo before uppercase Albedo",
+            [Input("Albedo", "Upper", PbrMapKind.BaseColor),
+             Input("albedo", "Lower", PbrMapKind.BaseColor)], "albedo");
+        AssertSelection("exact Base_Color before later BaseColor",
+            [primary, Input("Base_Color", "Underscore", PbrMapKind.BaseColor)], "Base_Color");
+        AssertSelection("normalized-only spelling cannot outrank exact upstream name",
+            [Input("BASE-COLOR", "Variant", PbrMapKind.BaseColor),
+             Input("Diffuse", "Diffuse", PbrMapKind.BaseColor)], "Diffuse");
         var failedPrimary = primary with { Outputs = [], ExportMetadataAvailable = false };
         var selected = Select([failedPrimary, Input("PM_Diffuse", "AvailableButWrong", PbrMapKind.BaseColor)]);
         if (selected.Single().ParameterIdentity != "BaseColor")
@@ -92,7 +104,7 @@ internal static class PrimaryTextureSelectionChecks
             if (!projection.Diagnostics.Any(item => item.Code == "texture.export.metadata" && item.Severity == expected))
                 throw new InvalidOperationException("Primary preview failure bypassed Linked/Strict diagnostics.");
         }
-        Console.WriteLine("PrimaryTextureSelectionChecks: 17 cases PASS (including reversed input order and Linked/Strict failure).");
+        Console.WriteLine("PrimaryTextureSelectionChecks: 21 cases PASS (including reversed input order and Linked/Strict failure).");
     }
 
     private static IReadOnlyList<FModelTextureInput> Select(IReadOnlyList<FModelTextureInput> inputs) =>

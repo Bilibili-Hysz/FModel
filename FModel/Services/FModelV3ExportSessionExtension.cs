@@ -51,7 +51,8 @@ internal sealed class FModelV3ExportSessionExtension : IExportSessionExtension
         if (!policy.Enabled)
             return null;
 
-        return new FModelUeFormatMeshFormat(policy, session, export, ReportDiagnostic);
+        return new FModelUeFormatMeshFormat(policy, session, export, ReportDiagnostic,
+            declaration => FModelV3ExportDelivery.Record(session.OperationId, declaration));
     }
 
     public IAnimExportFormat? TryCreateAnimationFormat(
