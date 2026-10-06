@@ -285,4 +285,16 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <!-- An audited native build can be embedded in the portable single-file publish. -->
+  <ItemGroup Condition="'$(CUE4PARSE_PREBUILT_NATIVE)' != ''">
+    <Content Include="$(CUE4PARSE_PREBUILT_NATIVE)">
+      <Link>CUE4Parse-Natives.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+  <Target Name="ValidatePrebuiltCUE4ParseNative" BeforeTargets="PrepareForBuild" Condition="'$(CUE4PARSE_PREBUILT_NATIVE)' != ''">
+    <Error Condition="!Exists('$(CUE4PARSE_PREBUILT_NATIVE)')" Text="Pinned CUE4Parse native library is missing: $(CUE4PARSE_PREBUILT_NATIVE)" />
+  </Target>
+
 </Project>
