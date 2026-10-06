@@ -1735,7 +1735,8 @@ public class CUE4ParseViewModel : ViewModel
             if (exportIndex < 0) throw new InvalidOperationException("The loaded static mesh is absent from its owner export map.");
             var resolvedExport = new FPackageIndex(owner, exportIndex + 1).ResolvedObject?.Object?.Value;
             FModelV3NewPipelineOneShotExecution.RequireExactExportIdentity(staticMesh, resolvedExport);
-            if (!CheckExport(cancellationToken, owner, exportIndex, EBulkType.Meshes | EBulkType.Auto))
+            var showSnooper = false;
+            if (!CheckExport(cancellationToken, owner, exportIndex, ref showSnooper, EBulkType.Meshes | EBulkType.Auto))
                 throw new InvalidOperationException("The normal host export route did not report success.");
 
             var results = await ExportSessionViewModel.Instance.Session.RunAsync(
