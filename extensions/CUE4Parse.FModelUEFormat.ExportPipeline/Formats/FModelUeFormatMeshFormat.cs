@@ -176,6 +176,8 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
 
         var projection = projectionFactory();
         Publish(projection.Diagnostics);
+        if (policy.RequiresCompleteMaterialProjection && !projection.IsComplete)
+            throw new InvalidOperationException("Strict material projection contains errors; inspect the preceding material/texture diagnostics.");
         if (projection.Materials.Count == 0)
         {
             if (policy.RequiresCompleteMaterialProjection)

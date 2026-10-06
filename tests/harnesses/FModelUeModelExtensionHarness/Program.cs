@@ -19,6 +19,7 @@ using CUE4Parse_Conversion.Formats.Meshes;
 
 PrimaryTextureSelectionChecks.Run();
 LazyTextureReferenceChecks.Run();
+MaterialMappingGuardrailChecks.Run();
 await TextureDeliveryBoundaryChecks.RunAsync();
 TerminalDeliveryChecks.Run();
 

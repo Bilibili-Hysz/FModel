@@ -25,7 +25,7 @@ internal static class FModelV3ExporterFactory
 
     public static bool IsEnabled => true;
 
-    internal static bool IsSupported(UObject export) => export is UStaticMesh or USkeletalMesh or UGeometryCollection;
+    internal static bool IsSupported(UObject export) => FModelV3MeshEligibility.SupportsMaterialProjection(export);
 
     internal static FModelUeFormatPolicy CreatePolicySnapshot()
     {

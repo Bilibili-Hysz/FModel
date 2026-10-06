@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+using CUE4Parse.UE4.Assets.Exports.Material;
 using System.Reflection;
 using CUE4Parse.UE4.Assets.Exports.Texture;
 using CUE4Parse.FModelUEFormat.ExportPipeline.Diagnostics;
@@ -90,6 +93,24 @@ internal static class PrimaryTextureSelectionChecks
         AssertSelection("normalized-only spelling cannot outrank exact upstream name",
             [Input("BASE-COLOR", "Variant", PbrMapKind.BaseColor),
              Input("Diffuse", "Diffuse", PbrMapKind.BaseColor)], "Diffuse");
+        AssertSelection("R66 Base_ORM precedes Base_SRO",
+            [Input("Base_ORM", "NewOrm", PbrMapKind.Orm), Input("Base_SRO", "Sro", PbrMapKind.Orm)], "Base_ORM");
+        AssertSelection("existing ORM precedes Base_ORM",
+            [Input("Base_ORM", "NewOrm", PbrMapKind.Orm), Input("ORM", "Orm", PbrMapKind.Orm)], "ORM");
+        AssertSelection("mixed packed parameters retain upstream priority",
+            [Input("Base_SRO", "Sro", PbrMapKind.Orm), Input("Base_ORM", "NewOrm", PbrMapKind.Orm),
+             Input("ORM", "Orm", PbrMapKind.Orm)], "ORM");
+        var explained = Select([Input("Base_ORM", "NewOrm", PbrMapKind.Orm), Input("Base_SRO", "Sro", PbrMapKind.Orm)]);
+        if (explained.Single().PrimarySelectionReason is not { } reason
+            || !reason.Contains("exact upstream name rank") || !reason.Contains("Base_SRO"))
+            throw new InvalidOperationException("Multiple candidates lost the selected parameter/rank explanation.");
+        if (Select([primary]).Single().PrimarySelectionReason is not null)
+            throw new InvalidOperationException("Single candidate must not emit a selection diagnostic.");
+        // Any future upstream alias/order change needs a deliberate review of
+        // expected selections before this fixture's digest can be updated.
+        CheckRanks("Diffuse", CMaterialParams2.Diffuse[0], "695421835074677d03e46fe5ef565b1abd27e7a15f053760190a88abedd56dce");
+        CheckRanks("Normals", CMaterialParams2.Normals[0], "5ff5c074ba934b15ec5f60fa562c82db50e6e5613ea2db8ecc7ecc6edb0fa2a5");
+        CheckRanks("SpecularMasks", CMaterialParams2.SpecularMasks[0], "e9aeef2e545ee67d828bcfea72379269ea23eec03e4cecdc2497f5dd35499023");
         var failedPrimary = primary with { Outputs = [], ExportMetadataAvailable = false };
         var selected = Select([failedPrimary, Input("PM_Diffuse", "AvailableButWrong", PbrMapKind.BaseColor)]);
         if (selected.Single().ParameterIdentity != "BaseColor")
@@ -104,7 +125,14 @@ internal static class PrimaryTextureSelectionChecks
             if (!projection.Diagnostics.Any(item => item.Code == "texture.export.metadata" && item.Severity == expected))
                 throw new InvalidOperationException("Primary preview failure bypassed Linked/Strict diagnostics.");
         }
-        Console.WriteLine("PrimaryTextureSelectionChecks: 21 cases PASS (including reversed input order and Linked/Strict failure).");
+        Console.WriteLine("PrimaryTextureSelectionChecks: existing 21 cases + R67 mixed-mask priority/explanation/digest checks PASS; reversed input order PASS.");
+    }
+
+    private static void CheckRanks(string name, string[] names, string expected)
+    {
+        var actual = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", names))));
+        if (actual != expected)
+            throw new InvalidOperationException($"Upstream {name}[0] aliases/order changed: {actual}; review primary selection before accepting the new table.");
     }
 
     private static IReadOnlyList<FModelTextureInput> Select(IReadOnlyList<FModelTextureInput> inputs) =>

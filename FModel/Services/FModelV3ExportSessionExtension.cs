@@ -41,14 +41,13 @@ internal sealed class FModelV3ExportSessionExtension : IExportSessionExtension
         ArgumentNullException.ThrowIfNull(export);
         ArgumentNullException.ThrowIfNull(session);
 
-        // Fail closed outside the agreed resource-level scope. ActorX, GLTF,
-        // USD, Skeleton and every non-mesh UObject remain entirely upstream.
-        if (format != EMeshFormat.UEFormat ||
-            !FModelV3ExporterFactory.IsSupported(export))
+        if (format != EMeshFormat.UEFormat)
             return null;
 
         var policy = FModelV3ExporterFactory.CreatePolicySnapshot();
-        if (!policy.Enabled)
+        if (FModelV3MeshEligibility.StandardOnlyDiagnostic(export, format, policy) is { } diagnostic)
+            ReportDiagnostic(diagnostic);
+        if (!policy.Enabled || !FModelV3ExporterFactory.IsSupported(export))
             return null;
 
         return new FModelUeFormatMeshFormat(policy, session, export, ReportDiagnostic,

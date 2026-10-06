@@ -156,6 +156,32 @@ public sealed class FModelMaterialProjectionBuilder
                     continue;
                 }
 
+                if (policy.EmitTextureLinks && texture.PrimarySelectionReason is { } reason)
+                    diagnostics.Add(new FModelUeFormatPipelineDiagnostic(
+                        "texture.primary.selected", FModelUeFormatDiagnosticSeverity.Info,
+                        FModelUeFormatPipelineStage.MaterialProjection, objectPath, reason,
+                        materialSlot: slot.SlotName, textureParameter: texture.ParameterIdentity,
+                        evidenceGeneration: policy.EvidenceGeneration));
+
+                // A SpecularMasks classification identifies a packed map, not its
+                // RGB layout. Only explicit ORM declarations can use the frozen
+                // consumer's G=roughness/B=metallic binding without a game profile.
+                if (policy.EmitTextureLinks && TryClassifyMap(texture, out var packedKind)
+                    && packedKind == PbrMapKind.Orm
+                    && !FModelPackedMaskLayout.IsDeclaredOrm(texture.ParameterIdentity))
+                {
+                    diagnostics.Add(new FModelUeFormatPipelineDiagnostic(
+                        "texture.orm.layout-unverified",
+                        policy.RequiresCompleteMaterialProjection
+                            ? FModelUeFormatDiagnosticSeverity.Error : FModelUeFormatDiagnosticSeverity.Warning,
+                        FModelUeFormatPipelineStage.MaterialProjection, objectPath,
+                        "Selected packed-mask parameter does not declare the supported RGB ORM layout (R=occlusion, G=roughness, B=metallic); automatic ORM binding was skipped.",
+                        materialSlot: slot.SlotName, textureParameter: texture.ParameterIdentity,
+                        recovery: "Verify the source shader's channel layout. A verified game-specific conversion is required for other layouts; another candidate is not substituted.",
+                        evidenceGeneration: policy.EvidenceGeneration));
+                    continue;
+                }
+
                 var outputs = (texture.Outputs ?? Array.Empty<FModelTextureOutputProjection>())
                     .OrderBy(output => output.OutputOrdinal)
                     .ThenBy(output => output.LogicalResourceUri, StringComparer.Ordinal)
@@ -489,6 +515,11 @@ public sealed class FModelMaterialProjectionBuilder
 
         FModelTextureInput ProjectSelected(FModelTextureInput input)
         {
+            // Keep the selected identity for Build() diagnostics, but do not
+            // queue extra encoding for a mask whose automatic binding is unsafe.
+            if (policy.EmitTextureLinks && input.MapKind == PbrMapKind.Orm
+                && !FModelPackedMaskLayout.IsDeclaredOrm(input.ParameterIdentity))
+                return input;
             if (!texturesByParameter.TryGetValue(input.ParameterIdentity!, out var texture))
                 return input;
             IReadOnlyList<FModelTextureOutputProjection>? outputs = null;
@@ -548,15 +579,26 @@ public sealed class FModelMaterialProjectionBuilder
         var selected = eligible
             .Where(input => input.MapKind is not null)
             .GroupBy(input => input.MapKind!.Value)
-            .Select(group => group
+            .Select(group =>
+            {
                 // Semantic identity wins over output availability. If the primary
                 // export fails, retain it so Build() emits the Linked/Strict metadata
                 // diagnostic; silently using a working overlay is not a repair.
-                .OrderBy(input => TexturePriority(input, group.Key))
-                .ThenBy(input => input.Outputs is { Count: > 0 } ? 0 : 1)
-                .ThenBy(input => input.ParameterIdentity, StringComparer.Ordinal)
-                .ThenBy(input => input.SourceIdentity, StringComparer.Ordinal)
-                .First())
+                var ranked = group.OrderBy(input => TexturePriority(input, group.Key))
+                    .ThenBy(input => input.Outputs is { Count: > 0 } ? 0 : 1)
+                    .ThenBy(input => input.ParameterIdentity, StringComparer.Ordinal)
+                    .ThenBy(input => input.SourceIdentity, StringComparer.Ordinal)
+                    .ToArray();
+                var winner = ranked[0];
+                if (ranked.Length == 1)
+                    return winner;
+                var names = string.Join(", ", ranked.Take(4).Select(input => DisplayParameter(input.ParameterIdentity)));
+                var more = ranked.Length > 4 ? ", ..." : string.Empty;
+                return winner with
+                {
+                    PrimarySelectionReason = $"Selected {DisplayParameter(winner.ParameterIdentity)} among {ranked.Length} eligible {group.Key} candidates by {DescribePriority(winner, group.Key)}; ranked parameters: [{names}{more}]. Equal ranks use output availability, then parameter/source identity."
+                };
+            })
             .ToList();
 
         if (selected.All(input => input.MapKind != PbrMapKind.BaseColor))
@@ -588,6 +630,23 @@ public sealed class FModelMaterialProjectionBuilder
             .OrderBy(input => input.MapKind)
             .ThenBy(input => input.ParameterIdentity, StringComparer.Ordinal)
             .ToArray();
+    }
+
+    private static string DisplayParameter(string? parameter)
+    {
+        var value = (parameter ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ');
+        return value.Length <= 96 ? value : value[..96] + "...";
+    }
+
+    private static string DescribePriority(FModelTextureInput input, PbrMapKind mapKind)
+    {
+        var name = input.ParameterIdentity ?? string.Empty;
+        if (ExactPrimaryNameRanks[mapKind].TryGetValue(name, out var rank))
+            return $"exact upstream name rank {rank}";
+        if (PrimaryNameRanks[mapKind].TryGetValue(NormalizeParameter(name), out rank))
+            return $"normalized upstream name rank {rank}";
+        if (IsFallbackParameter(name)) return "fallback alias priority";
+        return IsAssetNameParameter(input) ? "asset-name alias priority" : "semantic parameter priority";
     }
 
     private static int TexturePriority(FModelTextureInput input, PbrMapKind mapKind)
@@ -832,4 +891,5 @@ public sealed record FModelTextureInput(
     public bool SourceTextureIsNormalMap { get; init; }
     // Selection-only metadata; never serialized into the frozen FMODEL_* wire.
     public bool SourceTextureIsCubeMap { get; init; }
+    public string? PrimarySelectionReason { get; init; }
 }

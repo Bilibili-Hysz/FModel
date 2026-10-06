@@ -62,6 +62,13 @@ internal static class LazyTextureReferenceChecks
         Check(selected.Single().ParameterIdentity == "BaseColor" && previewSession.TotalQueued == 1,
             "Rejected candidates were added to the texture preview queue.");
 
+        using var maskSession = new ExportSession { Extension = new NoopExportSessionExtension() };
+        var maskPreview = new FModelTextureExportPreview(maskSession);
+        selected = Build(new() { ["SpecularMasks"] = new Reference(new UTexture2D { Name = "UnknownMask" }),
+            ["ORM"] = new Reference(new UTexture2D { Name = "KnownMask" }) }, maskPreview);
+        Check(selected.Single().ParameterIdentity == "SpecularMasks" && maskSession.TotalQueued == 0,
+            "An unverified selected mask queued extra preview encoding or substituted the lower-priority ORM.");
+
         var normal = new UTexture2D { Name = "N" };
         typeof(UTexture).GetProperty(nameof(UTexture.CompressionSettings))!.SetValue(normal, TextureCompressionSettings.TC_Normalmap);
         selected = Build(new() { ["UnknownTexture"] = new Reference(normal) });
@@ -78,7 +85,7 @@ internal static class LazyTextureReferenceChecks
         newExporterSession.Add(new UHoudiniAsset { Name = "Houdini" });
         newExporterSession.Add(new UIRMesh { Name = "IRMesh" });
         Check(newExporterSession.TotalQueued == 2, "Deferred session registration blocked newly supported official exporters.");
-        Console.WriteLine("LazyTextureReferenceChecks: 8 cases PASS; new exporter queue: IRMesh + Houdini PASS.");
+        Console.WriteLine("LazyTextureReferenceChecks: existing 8 cases + unverified-mask preview suppression PASS; new exporter queue: IRMesh + Houdini PASS.");
     }
 
     private static IReadOnlyList<FModelTextureInput> Build(Dictionary<string, ILoadableObject> references,
