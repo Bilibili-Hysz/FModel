@@ -280,13 +280,6 @@ public sealed class UserSettings : ViewModel
         set => SetProperty(ref _convertAudioOnBulkExport, value);
     }
 
-    private bool _mergeEditorOnlyDataExports = false;
-    public bool MergeEditorOnlyDataExports
-    {
-        get => _mergeEditorOnlyDataExports;
-        set => SetProperty(ref _mergeEditorOnlyDataExports, value);
-    }
-
     private bool _decompileLua;
     public bool DecompileLua
     {
@@ -440,6 +433,13 @@ public sealed class UserSettings : ViewModel
     {
         get => _exportData;
         set => SetProperty(ref _exportData, value);
+    }
+
+    private Hotkey _exportEmbeddedFiles = new(Key.None);
+    public Hotkey ExportEmbeddedFiles
+    {
+        get => _exportEmbeddedFiles;
+        set => SetProperty(ref _exportEmbeddedFiles, value);
     }
 
     private Hotkey _exportProperties = new(Key.None);
