@@ -108,9 +108,19 @@ internal static class PrimaryTextureSelectionChecks
             throw new InvalidOperationException("Single candidate must not emit a selection diagnostic.");
         // Any future upstream alias/order change needs a deliberate review of
         // expected selections before this fixture's digest can be updated.
-        CheckRanks("Diffuse", CMaterialParams2.Diffuse[0], "695421835074677d03e46fe5ef565b1abd27e7a15f053760190a88abedd56dce");
-        CheckRanks("Normals", CMaterialParams2.Normals[0], "5ff5c074ba934b15ec5f60fa562c82db50e6e5613ea2db8ecc7ecc6edb0fa2a5");
-        CheckRanks("SpecularMasks", CMaterialParams2.SpecularMasks[0], "e9aeef2e545ee67d828bcfea72379269ea23eec03e4cecdc2497f5dd35499023");
+        CheckRanks("Diffuse", CMaterialParams2.Diffuse[0], "dfc357d5772ae101d405376bfa0ca35a0e7e3c23dcc0f1047927b017970d0690");
+        CheckRanks("Normals", CMaterialParams2.Normals[0], "e99157418b23dd817ddc83c999d1520b68e4bacc1e5f3897e6c359c7b0ad17df");
+        CheckRanks("SpecularMasks", CMaterialParams2.SpecularMasks[0], "5880c902ac452d94cf9189d8f5333f02a76beb8ccd72d91e983fd35f6a9be145");
+        // R69 additions were reviewed before accepting the new table digests.
+        // Tex_Core_Layer_AO is published in both upstream lists, so classification
+        // must retain the existing ORM-before-BaseColor precedence.
+        AssertClassification(classify, "BaseColor Map", PbrMapKind.BaseColor);
+        AssertClassification(classify, "VT_Tex_SkinBase_BC", PbrMapKind.BaseColor);
+        AssertClassification(classify, "VT_Tex_SkinBase_N", PbrMapKind.Normal);
+        AssertClassification(classify, "Tex_Core_Layer_Normal", PbrMapKind.Normal);
+        AssertClassification(classify, "VT_Tex_SkinBase_ORM", PbrMapKind.Orm);
+        AssertClassification(classify, "HRM\\ORM Map", PbrMapKind.Orm);
+        AssertClassification(classify, "Tex_Core_Layer_AO", PbrMapKind.Orm);
         var failedPrimary = primary with { Outputs = [], ExportMetadataAvailable = false };
         var selected = Select([failedPrimary, Input("PM_Diffuse", "AvailableButWrong", PbrMapKind.BaseColor)]);
         if (selected.Single().ParameterIdentity != "BaseColor")
@@ -133,6 +143,13 @@ internal static class PrimaryTextureSelectionChecks
         var actual = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", names))));
         if (actual != expected)
             throw new InvalidOperationException($"Upstream {name}[0] aliases/order changed: {actual}; review primary selection before accepting the new table.");
+    }
+
+    private static void AssertClassification(MethodInfo classify, string name, PbrMapKind expected)
+    {
+        object[] arguments = [name, default(PbrMapKind)];
+        if (!(bool)classify.Invoke(null, arguments)! || (PbrMapKind)arguments[1] != expected)
+            throw new InvalidOperationException($"R69 primary alias {name} did not classify as {expected}.");
     }
 
     private static IReadOnlyList<FModelTextureInput> Select(IReadOnlyList<FModelTextureInput> inputs) =>
