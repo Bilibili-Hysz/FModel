@@ -85,7 +85,7 @@ static FModelMaterialProjection CreateProjection()
 
     static FModelTextureResourceProjection Resource(string id, string uri)
     {
-        var data = Png1x1();
+        var data = Png1x1(id);
         return new FModelTextureResourceProjection(
             id,
             $"/CodeWorld/Content/Textures/{id}.{id}",
@@ -110,8 +110,20 @@ static FModelMaterialProjection CreateProjection()
         "Body");
 }
 
-static byte[] Png1x1() => Convert.FromBase64String(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/5ncLrgAAAABJRU5ErkJggg==");
+// Each map gets its own colour so a wrong binding shows up as a wrong colour, not just a
+// wrong node name. The previous single constant had a bad IDAT CRC, so Blender decoded
+// nothing: every imported image was 0x0 with has_data false. The gate could not see it
+// because it only asserted that a TEX_IMAGE node existed with a datablock and a filepath.
+static byte[] Png1x1(string resourceId) => Convert.FromBase64String(resourceId switch
+{
+    "texture.basecolor" =>
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGM4UWHzHwAGBAJ87l7R9AAAAABJRU5ErkJggg==",
+    "texture.normal" =>
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNoaPj/HwAGggL/s75RMwAAAABJRU5ErkJggg==",
+    "texture.orm" =>
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP438DwHwAGgAJ/EEwb4QAAAABJRU5ErkJggg==",
+    _ => throw new ArgumentOutOfRangeException(nameof(resourceId), resourceId, "no PNG for resource"),
+});
 
 static void WriteProjectedTextures(string outputDirectory, FModelMaterialProjection projection)
 {
@@ -125,7 +137,7 @@ static void WriteProjectedTextures(string outputDirectory, FModelMaterialProject
         if (!outputPath.StartsWith(outputRoot, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"Fixture texture escaped output root: {resource.LogicalResourceUri}");
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
-        File.WriteAllBytes(outputPath, Png1x1());
+        File.WriteAllBytes(outputPath, Png1x1(resource.StableId));
     }
 }
 
