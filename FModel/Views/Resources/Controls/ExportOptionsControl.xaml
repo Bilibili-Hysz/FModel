@@ -303,3 +303,4 @@
                   Style="{DynamicResource {x:Static adonisUi:Styles.ToggleSwitch}}" />
     </Grid>
 </UserControl>
+
