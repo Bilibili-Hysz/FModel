@@ -9,9 +9,9 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Windows;
 using AdonisUI.Controls;
 using CUE4Parse_Conversion.Exporters;
+using CUE4Parse.UE4.Assets.Exports.Paper2D;
 using CUE4Parse_Conversion.Sounds;
 using CUE4Parse;
 using CUE4Parse.Compression;
@@ -88,11 +88,8 @@ using FModel.Services;
 using FModel.Settings;
 using FModel.Views;
 using FModel.Views.Resources.Controls;
-using FModel.Views.Snooper;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
-using OpenTK.Windowing.Common;
-using OpenTK.Windowing.Desktop;
 using Serilog;
 using SkiaSharp;
 using Svg.Skia;
@@ -111,53 +108,6 @@ public class CUE4ParseViewModel : ViewModel
         RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly HttpClient _chunkClient = ManifestParseOptions.CreateDefaultClient();
-
-    private bool _modelIsOverwritingMaterial;
-    public bool ModelIsOverwritingMaterial
-    {
-        get => _modelIsOverwritingMaterial;
-        set => SetProperty(ref _modelIsOverwritingMaterial, value);
-    }
-
-    private bool _modelIsWaitingAnimation;
-    public bool ModelIsWaitingAnimation
-    {
-        get => _modelIsWaitingAnimation;
-        set => SetProperty(ref _modelIsWaitingAnimation, value);
-    }
-
-    public bool IsSnooperOpen => _snooper is { Exists: true, IsVisible: true };
-    private Snooper _snooper;
-    public Snooper SnooperViewer
-    {
-        get
-        {
-            if (_snooper != null) return _snooper;
-
-            return Application.Current.Dispatcher.Invoke(delegate
-            {
-                var scale = ImGuiController.GetDpiScale();
-                var htz = Snooper.GetMaxRefreshFrequency();
-                return _snooper = new Snooper(
-                    new GameWindowSettings { UpdateFrequency = htz },
-                    new NativeWindowSettings
-                    {
-                        ClientSize = new OpenTK.Mathematics.Vector2i(
-                            Convert.ToInt32(SystemParameters.MaximizedPrimaryScreenWidth * .75 * scale),
-                            Convert.ToInt32(SystemParameters.MaximizedPrimaryScreenHeight * .85 * scale)),
-                        NumberOfSamples = Constants.SAMPLES_COUNT,
-                        WindowBorder = WindowBorder.Resizable,
-                        Flags = ContextFlags.ForwardCompatible,
-                        Profile = ContextProfile.Core,
-                        Vsync = VSyncMode.Adaptive,
-                        APIVersion = new Version(4, 6),
-                        StartVisible = false,
-                        StartFocused = false,
-                        Title = "3D Viewer"
-                    });
-            });
-        }
-    }
 
     public AbstractVfsFileProvider Provider { get; }
     public GameDirectoryViewModel GameDirectory { get; }
@@ -729,17 +679,14 @@ public class CUE4ParseViewModel : ViewModel
                     break;
                 }
 
-                var showSnooper = false;
                 var exportEmbeddedFiles = HasFlag(bulk, EBulkType.EmbeddedFiles);
                 var start = exportEmbeddedFiles ? 0 : result.InclusiveStart;
                 var end = exportEmbeddedFiles ? result.Package.ExportMapLength : result.ExclusiveEnd;
                 for (var i = start; i < end; i++)
                 {
-                    if (CheckExport(cancellationToken, result.Package, i, ref showSnooper, bulk))
+                    if (CheckExport(cancellationToken, result.Package, i, bulk))
                         break;
                 }
-
-                if (showSnooper) SnooperViewer.Run();
 
                 break;
             }
@@ -1305,17 +1252,14 @@ public class CUE4ParseViewModel : ViewModel
         TabControl.SelectedTab.Highlighter = AvalonExtensions.HighlighterSelector(""); // json
         TabControl.SelectedTab.SetDocumentText(JsonConvert.SerializeObject(result.GetDisplayData(), Formatting.Indented), false, false);
 
-        var showSnooper = false;
         for (var i = result.InclusiveStart; i < result.ExclusiveEnd; i++)
         {
-            if (CheckExport(cancellationToken, result.Package, i, ref showSnooper))
+            if (CheckExport(cancellationToken, result.Package, i))
                 break;
         }
-
-        if (showSnooper) SnooperViewer.Run();
     }
 
-    private bool CheckExport(CancellationToken cancellationToken, IPackage pkg, int index, ref bool showSnooper, EBulkType bulk = EBulkType.None) // return true once you want to stop searching for exports
+    private bool CheckExport(CancellationToken cancellationToken, IPackage pkg, int index, EBulkType bulk = EBulkType.None) // return true once you want to stop searching for exports
     {
         var isNone = bulk == EBulkType.None;
         var updateUi = !HasFlag(bulk, EBulkType.Auto);
@@ -1328,6 +1272,11 @@ public class CUE4ParseViewModel : ViewModel
         var dummy = ((AbstractUePackage) pkg).ConstructObject(pointer.Class, pkg);
         switch (dummy)
         {
+            case not null when isNone && SnooperViewModel.Instance.TryDeliver(pointer.Object.Value):
+            {
+                // the viewer asked for this kind of asset and took it
+                return true;
+            }
             case UObject when HasFlag(bulk, EBulkType.EmbeddedFiles):
             {
                 if (EmbeddedFilesDto.Supports(dummy) && new EmbeddedFilesDto(pointer.Object.Value).Files.Count > 0)
@@ -1663,47 +1612,22 @@ public class CUE4ParseViewModel : ViewModel
                 return false;
             }
             case UWorld when isNone && UserSettings.Default.PreviewWorlds:
-            // case UBlueprintGeneratedClass when isNone && UserSettings.Default.PreviewWorlds && TabControl.SelectedTab.ParentExportType switch
-            // {
-            //     "JunoBuildInstructionsItemDefinition" => true,
-            //     "JunoBuildingSetAccountItemDefinition" => true,
-            //     "JunoBuildingPropAccountItemDefinition" => true,
-            //     _ => false
-            // }:
-            case UPaperSprite when isNone && UserSettings.Default.PreviewMaterials:
+            case UBlueprintGeneratedClass when isNone && UserSettings.Default.PreviewWorlds:
+            case UPaperTileMap when isNone && UserSettings.Default.PreviewWorlds && Provider.Versions.Game is GAME_DeadByDaylight:
             case UStaticMesh when isNone && UserSettings.Default.PreviewStaticMeshes:
             case UIRMesh when isNone && UserSettings.Default.PreviewStaticMeshes:
             case UHoudiniStaticMesh when isNone && UserSettings.Default.PreviewStaticMeshes:
             case UGeometryCollection when isNone && UserSettings.Default.PreviewStaticMeshes:
             case USkinnedAsset when isNone && UserSettings.Default.PreviewSkeletalMeshes:
             case USkeleton when isNone && UserSettings.Default.SaveSkeletonAsMesh:
-            case UMaterialInstance when isNone && UserSettings.Default.PreviewMaterials && !ModelIsOverwritingMaterial &&
-                                        !(Provider.ProjectName.Equals("FortniteGame", StringComparison.OrdinalIgnoreCase) &&
-                                          (pkg.Name.Contains("/MI_OfferImages/", StringComparison.OrdinalIgnoreCase) ||
-                                           pkg.Name.Contains("/RenderSwitch_Materials/", StringComparison.OrdinalIgnoreCase) ||
-                                           pkg.Name.Contains("/MI_BPTile/", StringComparison.OrdinalIgnoreCase))):
+            case UAnimationAsset when isNone && UserSettings.Default.PreviewAnimations:
+            case UMaterialInterface when isNone && UserSettings.Default.PreviewMaterials &&
+                                         !(Provider.ProjectName.Equals("FortniteGame", StringComparison.OrdinalIgnoreCase) &&
+                                           (pkg.Name.Contains("/MI_OfferImages/", StringComparison.OrdinalIgnoreCase) ||
+                                            pkg.Name.Contains("/RenderSwitch_Materials/", StringComparison.OrdinalIgnoreCase) ||
+                                            pkg.Name.Contains("/MI_BPTile/", StringComparison.OrdinalIgnoreCase))):
             {
-                if (SnooperViewer.TryLoadExport(cancellationToken, dummy, pointer.Object))
-                    showSnooper = true;
-                return true;
-            }
-            case UIRMeshComponent when isNone && UserSettings.Default.PreviewStaticMeshes:
-            {
-                if (SnooperViewer.TryLoadExport(cancellationToken, dummy, pointer.Object))
-                    showSnooper = true;
-                return false;
-            }
-            case UMaterialInstance when isNone && ModelIsOverwritingMaterial && pointer.Object.Value is UMaterialInstance m:
-            {
-                SnooperViewer.Renderer.Swap(m);
-                showSnooper = true;
-                return true;
-            }
-            case UAnimSequenceBase when isNone && UserSettings.Default.PreviewAnimations || ModelIsWaitingAnimation:
-            {
-                // animate all animations using their specified skeleton or when we explicitly asked for a loaded model to be animated (ignoring whether we wanted to preview animations)
-                SnooperViewer.Renderer.Animate(pointer.Object.Value);
-                showSnooper = true;
+                SnooperViewModel.Instance.Load(pointer.Object.Value, cancellationToken);
                 return true;
             }
             case UStaticMesh when HasFlag(bulk, EBulkType.Meshes):
@@ -1715,6 +1639,8 @@ public class CUE4ParseViewModel : ViewModel
             // case UMaterialInterface when HasFlag(bulk, EBulkType.Materials):
             case UAnimationAsset when HasFlag(bulk, EBulkType.Animations):
             case UWorld when HasFlag(bulk, EBulkType.Worlds):
+            case UBlueprintGeneratedClass when HasFlag(bulk, EBulkType.Worlds):
+            case UPaperTileMap when HasFlag(bulk, EBulkType.Worlds) && Provider.Versions.Game is GAME_DeadByDaylight:
             {
                 SaveExport(pointer.Object.Value);
                 return true;
@@ -1748,8 +1674,7 @@ public class CUE4ParseViewModel : ViewModel
             if (exportIndex < 0) throw new InvalidOperationException("The loaded static mesh is absent from its owner export map.");
             var resolvedExport = new FPackageIndex(owner, exportIndex + 1).ResolvedObject?.Object?.Value;
             FModelV3NewPipelineOneShotExecution.RequireExactExportIdentity(staticMesh, resolvedExport);
-            var showSnooper = false;
-            if (!CheckExport(cancellationToken, owner, exportIndex, ref showSnooper, EBulkType.Meshes | EBulkType.Auto))
+            if (!CheckExport(cancellationToken, owner, exportIndex, EBulkType.Meshes | EBulkType.Auto))
                 throw new InvalidOperationException("The normal host export route did not report success.");
 
             var results = await ExportSessionViewModel.Instance.Session.RunAsync(

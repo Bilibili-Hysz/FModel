@@ -12,7 +12,6 @@ using FModel.Extensions.Themes;
 using FModel.Framework;
 using FModel.ViewModels;
 using FModel.ViewModels.ApiEndpoints.Models;
-using FModel.Views.Snooper;
 using Newtonsoft.Json;
 
 namespace FModel.Settings;
@@ -23,6 +22,10 @@ public sealed class UserSettings : ViewModel
     // Keep this customized distribution self-contained so it never shares the
     // official FModel profile under %AppData% or beside a separately installed executable.
 #if DEBUG
+    // Customized distribution: keep the debug profile inside Output as well, so the
+    // self-contained rule above holds for both configurations.
+    public bool SuppressViewerLogs { get; set; }
+
     public static readonly string FilePath = Path.Combine(AppContext.BaseDirectory, "Output", "AppSettings_Debug.json");
 #else
     public static readonly string FilePath = Path.Combine(AppContext.BaseDirectory, "Output", "AppSettings.json");
@@ -61,6 +64,8 @@ public sealed class UserSettings : ViewModel
 
     public static ExportOptions GetExportOptions()
     {
+        // Named arguments are kept from this fork: ExportOptions gains parameters over
+        // time, and a positional call silently shifts every setting when that happens.
         return new ExportOptions(
             meshFormat: Default.MeshExportFormat,
             naniteMeshFormat: Default.NaniteMeshExportFormat,
@@ -74,8 +79,11 @@ public sealed class UserSettings : ViewModel
             exportMaterials: Default.SaveEmbeddedMaterials,
             exportMorphTargets: Default.SaveMorphTargets,
             socketFormat: Default.SocketExportFormat,
-            compressionFormat: Default.CompressionFormat
-        );}
+            compressionFormat: Default.CompressionFormat,
+            pngCompressionLevel: Default.PngCompressionLevel,
+            tgaRleCompression: Default.TgaRleCompression
+        );
+    }
 
     private bool _showChangelog = true;
     public bool ShowChangelog
@@ -540,6 +548,20 @@ public sealed class UserSettings : ViewModel
         set => SetProperty(ref _textureQuality, value);
     }
 
+    private int _pngCompressionLevel = 3;
+    public int PngCompressionLevel
+    {
+        get => _pngCompressionLevel;
+        set => SetProperty(ref _pngCompressionLevel, Math.Clamp(value, 0, 9));
+    }
+
+    private bool _tgaRleCompression = true;
+    public bool TgaRleCompression
+    {
+        get => _tgaRleCompression;
+        set => SetProperty(ref _tgaRleCompression, value);
+    }
+
     private ESocketFormat _socketExportFormat = ESocketFormat.Bone;
     public ESocketFormat SocketExportFormat
     {
@@ -573,13 +595,6 @@ public sealed class UserSettings : ViewModel
     {
         get => _animateWithRotationOnly;
         set => SetProperty(ref _animateWithRotationOnly, value);
-    }
-
-    private Camera.WorldMode _cameraMode = Camera.WorldMode.Arcball;
-    public Camera.WorldMode CameraMode
-    {
-        get => _cameraMode;
-        set => SetProperty(ref _cameraMode, value);
     }
 
     private int _previewMaxTextureSize = 1024;
