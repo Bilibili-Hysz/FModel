@@ -108,9 +108,15 @@ internal static class PrimaryTextureSelectionChecks
             throw new InvalidOperationException("Single candidate must not emit a selection diagnostic.");
         // Any future upstream alias/order change needs a deliberate review of
         // expected selections before this fixture's digest can be updated.
-        CheckRanks("Diffuse", CMaterialParams2.Diffuse[0], "dfc357d5772ae101d405376bfa0ca35a0e7e3c23dcc0f1047927b017970d0690");
-        CheckRanks("Normals", CMaterialParams2.Normals[0], "e99157418b23dd817ddc83c999d1520b68e4bacc1e5f3897e6c359c7b0ad17df");
-        CheckRanks("SpecularMasks", CMaterialParams2.SpecularMasks[0], "5880c902ac452d94cf9189d8f5333f02a76beb8ccd72d91e983fd35f6a9be145");
+        // R70 (CUE4Parse 1.2.2.202611) review: all three tables changed by pure insertion,
+        // no alias was removed, so previously matched names keep their meaning and only
+        // gain higher-priority alternatives ahead of them.
+        //   Diffuse       + Main_BaseColor, diff
+        //   Normals       + Main_Normal, "NormalMap Texture"
+        //   SpecularMasks + Main_ORM, AORoughnessMetallic, msr
+        CheckRanks("Diffuse", CMaterialParams2.Diffuse[0], "8effb7be66484417e69936b61b9497defabc288e7b2a5a9623b2b050f777763e");
+        CheckRanks("Normals", CMaterialParams2.Normals[0], "7031488158467b8de39c184c2548623a0b5d821546238e339029c70c361d1c1f");
+        CheckRanks("SpecularMasks", CMaterialParams2.SpecularMasks[0], "389fbf00bfaf54b2a640672a72870cd85e9b38902682a47c264a32174614336a");
         // R69 additions were reviewed before accepting the new table digests.
         // Tex_Core_Layer_AO is published in both upstream lists, so classification
         // must retain the existing ORM-before-BaseColor precedence.

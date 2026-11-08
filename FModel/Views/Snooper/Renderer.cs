@@ -392,7 +392,7 @@ public class Renderer : IDisposable
         {
             try
             {
-                var mesh = new StaticMeshDto(original, i);
+                var mesh = new StaticMeshDto(original, i, PreviewExportOptions(EMeshFormat.UEFormat, ENaniteMeshFormat.NoNanite));
                 Options.Models[new FGuid(hash ^ (uint) i)] = new StaticModel(original, mesh, i) { IsVisible = true };
                 mesh.Dispose();
             }
@@ -426,7 +426,7 @@ public class Renderer : IDisposable
         StaticMeshDto mesh;
         try
         {
-            mesh = new StaticMeshDto(original);
+            mesh = new StaticMeshDto(original, PreviewExportOptions(EMeshFormat.UEFormat, ENaniteMeshFormat.NoNanite));
         }
         catch (Exception e)
         {
@@ -451,7 +451,7 @@ public class Renderer : IDisposable
         StaticMeshDto mesh;
         try
         {
-            mesh = new StaticMeshDto(original, naniteFormat);
+            mesh = new StaticMeshDto(original, PreviewExportOptions(EMeshFormat.UEFormat, naniteFormat));
         }
         catch (Exception e)
         {
@@ -462,6 +462,15 @@ public class Renderer : IDisposable
         Options.Models[guid] = new StaticModel(original, mesh);
         Options.SelectModel(guid);
     }
+
+    /// <summary>
+    /// Options for building a mesh DTO that is only used for on-screen preview.
+    /// Upstream made <see cref="ExportOptions"/> a required DTO argument, so a preview
+    /// must supply one. Nothing here is written to disk: the DTO is handed to
+    /// StaticModel/SkeletalModel and disposed once the instance data is extracted.
+    /// </summary>
+    private static ExportOptions PreviewExportOptions(EMeshFormat meshFormat, ENaniteMeshFormat naniteFormat)
+        => new(meshFormat: meshFormat, naniteMeshFormat: naniteFormat);
 
     private void LoadSkinnedAsset(USkinnedAsset original, ENaniteMeshFormat naniteFormat = ENaniteMeshFormat.NoNanite)
     {
@@ -476,7 +485,7 @@ public class Renderer : IDisposable
         SkeletalMeshDto mesh;
         try
         {
-            mesh = new SkeletalMeshDto(original, EMeshQuality.Highest, naniteFormat);
+            mesh = new SkeletalMeshDto(original, PreviewExportOptions(EMeshFormat.UEFormat, naniteFormat));
         }
         catch (Exception e)
         {
