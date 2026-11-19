@@ -386,9 +386,9 @@ return 0;
 sealed class QueueHarnessExporter : ExporterBase
 {
     private readonly byte value;
-    private readonly Action<ExportSession>? onBuild;
+    private readonly Action<IExportSession>? onBuild;
 
-    public QueueHarnessExporter(string path, byte value, Action<ExportSession>? onBuild = null)
+    public QueueHarnessExporter(string path, byte value, Action<IExportSession>? onBuild = null)
         : base(new QueueHarnessGameFile(path), "QueueHarness")
     {
         this.value = value;
@@ -445,9 +445,9 @@ sealed class OrderedQueueExporter : ExporterBase
 {
     private readonly string name;
     private readonly List<string> order;
-    private readonly Action<ExportSession>? enqueue;
+    private readonly Action<IExportSession>? enqueue;
 
-    public OrderedQueueExporter(string path, string name, List<string> order, Action<ExportSession>? enqueue = null)
+    public OrderedQueueExporter(string path, string name, List<string> order, Action<IExportSession>? enqueue = null)
         : base(new QueueHarnessGameFile(path), "OrderedQueue")
     {
         this.name = name;
@@ -529,7 +529,7 @@ sealed class ThrowingProgress : IProgress<ExportProgress>
 
 sealed class NoopExportSessionExtension : IExportSessionExtension
 {
-    public IMeshExportFormat? TryCreateMeshFormat(UObject export, EMeshFormat format, ExportSession session) => null;
+    public IMeshExportFormat? TryCreateMeshFormat(UObject export, EMeshFormat format, IExportSession session) => null;
 }
 
 sealed class QueueHarnessGameFile : GameFile

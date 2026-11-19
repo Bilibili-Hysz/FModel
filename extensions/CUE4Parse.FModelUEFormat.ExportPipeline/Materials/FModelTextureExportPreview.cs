@@ -16,11 +16,11 @@ namespace CUE4Parse.FModelUEFormat.ExportPipeline.Materials;
 /// No file is written here.
 /// </summary>
 public sealed class FModelTextureExportPreview(
-    ExportSession session,
+    IExportSession session,
     FModelUeFormatResourceUriRoot resourceUriRoot = FModelUeFormatResourceUriRoot.ExportRoot,
     string? ownerModelUri = null)
 {
-    private readonly ExportSession session = session ?? throw new ArgumentNullException(nameof(session));
+    private readonly IExportSession session = session ?? throw new ArgumentNullException(nameof(session));
     private readonly FModelUeFormatResourceUriRoot resourceUriRoot = Enum.IsDefined(resourceUriRoot)
         ? resourceUriRoot
         : throw new ArgumentOutOfRangeException(nameof(resourceUriRoot));

@@ -26,7 +26,7 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
     private readonly FModelUeFormatPolicy policy;
     private readonly Action<FModelUeFormatPipelineDiagnostic>? diagnosticSink;
     private readonly Action<FModelUeFormatDeliveryDeclaration>? deliverySink;
-    private readonly ExportSession? session;
+    private readonly IExportSession? session;
     private readonly UObject? sourceObject;
     private readonly FModelMaterialProjectionBuilder projectionBuilder = new();
     private readonly FModelV10AttributeWriter attributeWriter = new();
@@ -41,7 +41,7 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
 
     public FModelUeFormatMeshFormat(
         FModelUeFormatPolicy policy,
-        ExportSession session,
+        IExportSession session,
         UObject sourceObject,
         Action<FModelUeFormatPipelineDiagnostic>? diagnosticSink = null,
         Action<FModelUeFormatDeliveryDeclaration>? deliverySink = null)

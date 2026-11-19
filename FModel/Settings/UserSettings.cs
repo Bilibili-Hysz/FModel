@@ -81,7 +81,9 @@ public sealed class UserSettings : ViewModel
             socketFormat: Default.SocketExportFormat,
             compressionFormat: Default.CompressionFormat,
             pngCompressionLevel: Default.PngCompressionLevel,
-            tgaRleCompression: Default.TgaRleCompression
+            tgaRleCompression: Default.TgaRleCompression,
+            includeDisabledMeshSections: Default.IncludeDisabledMeshSections,
+            animatedTextureFormat: Default.AnimatedTextureExportFormat
         );
     }
 
@@ -520,6 +522,13 @@ public sealed class UserSettings : ViewModel
         set => SetProperty(ref _naniteMeshExportFormat, value);
     }
 
+    private bool _includeDisabledMeshSections;
+    public bool IncludeDisabledMeshSections
+    {
+        get => _includeDisabledMeshSections;
+        set => SetProperty(ref _includeDisabledMeshSections, value);
+    }
+
     private EMeshQuality _meshQuality = EMeshQuality.Highest;
     public EMeshQuality MeshQuality
     {
@@ -527,7 +536,7 @@ public sealed class UserSettings : ViewModel
         set => SetProperty(ref _meshQuality, value);
     }
 
-    private EMaterialDepth _materialExportFormat = EMaterialDepth.TopLayerOnly;
+    private EMaterialDepth _materialExportFormat = EMaterialDepth.AllLayers;
     public EMaterialDepth MaterialExportFormat
     {
         get => _materialExportFormat;
@@ -539,6 +548,13 @@ public sealed class UserSettings : ViewModel
     {
         get => _textureExportFormat;
         set => SetProperty(ref _textureExportFormat, value);
+    }
+
+    private EAnimatedTextureFormat _animatedTextureExportFormat = EAnimatedTextureFormat.Png;
+    public EAnimatedTextureFormat AnimatedTextureExportFormat
+    {
+        get => _animatedTextureExportFormat;
+        set => SetProperty(ref _animatedTextureExportFormat, value);
     }
 
     private int _textureQuality = 100;

@@ -23,11 +23,11 @@ namespace CUE4Parse.FModelUEFormat.ExportPipeline.World;
 /// </summary>
 public sealed class FModelUeSceneWorldAssetProvider : IUeSceneWorldAssetProvider
 {
-    private readonly ExportSession session;
+    private readonly IExportSession session;
     private readonly FModelUeFormatPolicy policy;
     private readonly Dictionary<ulong, IReadOnlyList<UeSceneWorldAssetPlan>> dependenciesByAssetId = [];
 
-    public FModelUeSceneWorldAssetProvider(ExportSession session, FModelUeFormatPolicy policy)
+    public FModelUeSceneWorldAssetProvider(IExportSession session, FModelUeFormatPolicy policy)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
         this.policy = policy ?? throw new ArgumentNullException(nameof(policy));
