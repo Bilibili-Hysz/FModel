@@ -53,6 +53,7 @@ public sealed class FModelUeFormatMeshFormat : IMeshExportFormat
     }
 
     public string DisplayName => "UEFormat (V10 FModel adapter)";
+    public string Extension => "uemodel";
 
     public IReadOnlyList<ExportFile> BuildStaticMesh(
         string objectName,

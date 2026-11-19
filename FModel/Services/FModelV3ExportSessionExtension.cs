@@ -36,7 +36,7 @@ internal sealed class FModelV3ExportSessionExtension : IExportSessionExtension
     public IMeshExportFormat? TryCreateMeshFormat(
         UObject export,
         EMeshFormat format,
-        ExportSession session)
+        IExportSession session)
     {
         ArgumentNullException.ThrowIfNull(export);
         ArgumentNullException.ThrowIfNull(session);
@@ -57,7 +57,7 @@ internal sealed class FModelV3ExportSessionExtension : IExportSessionExtension
     public IAnimExportFormat? TryCreateAnimationFormat(
         UAnimationAsset export,
         EMeshFormat format,
-        ExportSession session)
+        IExportSession session)
     {
         ArgumentNullException.ThrowIfNull(export);
         ArgumentNullException.ThrowIfNull(session);
@@ -82,7 +82,7 @@ internal sealed class FModelV3ExportSessionExtension : IExportSessionExtension
     public IPoseExportFormat? TryCreatePoseFormat(
         UPoseAsset export,
         EMeshFormat format,
-        ExportSession session)
+        IExportSession session)
     {
         ArgumentNullException.ThrowIfNull(export);
         ArgumentNullException.ThrowIfNull(session);
